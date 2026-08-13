@@ -62,6 +62,12 @@ var Plugins = []Plugin{
 		TypeName: "VictoriaLogs",
 	},
 	{
+		Id:       12,
+		Category: "logging",
+		Type:     "openobserve",
+		TypeName: "OpenObserve",
+	},
+	{
 		Id:       11,
 		Category: "timeseries",
 		Type:     "iotdb",
