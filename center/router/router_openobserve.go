@@ -70,7 +70,9 @@ func (rt *Router) QueryOpenObserveLabelNames(c *gin.Context) {
 	ctx := withCallContext(c.Request.Context(), f.DatasourceId, ginUser(c))
 	ret, err := oo.QueryLabelNames(ctx, f.Query, f.Start, f.End, f.Filter, f.Limit)
 	ginx.Dangerous(err)
-	sort.Strings(ret)
+	sort.Slice(ret, func(i, j int) bool {
+		return ret[i].Field < ret[j].Field
+	})
 
 	ginx.NewRender(c).Data(ret, nil)
 }

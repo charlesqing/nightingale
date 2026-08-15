@@ -349,7 +349,7 @@ func (oo *OpenObserve) Test(ctx context.Context) error {
 
 // --- label / field / histogram (UI support) ---
 
-func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start, end int64, filter string, limit int) ([]string, error) {
+func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start, end int64, filter string, limit int) ([]lokikit.FieldMeta, error) {
 	startU, endU := toMicros(start), toMicros(end)
 	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE _timestamp BETWEEN %d AND %d%s LIMIT 1`,
 		oo.stream(), startU, endU, oo.andClause(query))
@@ -368,7 +368,11 @@ func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start,
 	}
 	sort.Strings(names)
 	names = filterAndLimitStrings(names, filter, limit)
-	return names, nil
+	ret := make([]lokikit.FieldMeta, 0, len(names))
+	for _, k := range names {
+		ret = append(ret, lokikit.FieldMeta{Field: k})
+	}
+	return ret, nil
 }
 
 func (oo *OpenObserve) QueryLabelValues(ctx context.Context, query string, start, end int64, label, filter string, limit int) ([]lokikit.LabelValue, error) {
