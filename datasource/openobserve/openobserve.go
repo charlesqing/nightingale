@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,10 @@ const (
 	defaultHistogramSize = 10000
 	// 告警引擎等调用方通常不给 Query 传 start/end，这里作为默认评估窗口（最近 60s）。
 	defaultAlertWindow = 60 * time.Second
+	// 摄入延迟容忍：告警评估时把 end 回拨这么多，避免漏掉尚未被 OpenObserve 摄入的最近数据。
+	defaultIngestDelay = 2 * time.Minute
+	// 时间字段默认值（OpenObserve 默认时间列）。
+	defaultTimeField = "_timestamp"
 )
 
 // timestamp / line column candidates when parsing OpenObserve rows.
@@ -49,14 +54,16 @@ type OpenObserve struct {
 	Stream       string            `json:"openobserve.stream" mapstructure:"openobserve.stream"`
 	ClusterName  string            `json:"openobserve.cluster_name" mapstructure:"openobserve.cluster_name"`
 	MaxQueryRows int               `json:"openobserve.max_query_rows" mapstructure:"openobserve.max_query_rows"`
+	TimeField    string            `json:"openobserve.time_field" mapstructure:"openobserve.time_field"`
+	IngestDelay  int64             `json:"openobserve.ingest_delay" mapstructure:"openobserve.ingest_delay"`
 
 	HTTPClient *http.Client `json:"-" mapstructure:"-"`
 }
 
 type OpenObserveBasic struct {
-	Enable bool   `json:"openobserve.basic.auth.enable" mapstructure:"openobserve.basic.auth.enable"`
-	User   string `json:"openobserve.basic.user" mapstructure:"openobserve.basic.user"`
-	Pass   string `json:"openobserve.basic.password" mapstructure:"openobserve.basic.password"`
+	Enable bool   `json:"openobserve.is_encrypt" mapstructure:"openobserve.is_encrypt"`
+	User   string `json:"openobserve.user" mapstructure:"openobserve.user"`
+	Pass   string `json:"openobserve.password" mapstructure:"openobserve.password"`
 }
 
 type OpenObserveTLS struct {
@@ -66,14 +73,53 @@ type OpenObserveTLS struct {
 // Query mirrors the shape the frontend log explorer sends (same as Loki).
 type Query struct {
 	Query     string `json:"query"`
+	Org       string `json:"org"`    // 覆盖数据源配置里的组织（前端选择器传入）
+	Stream    string `json:"stream"` // 覆盖数据源配置里的数据流（前端选择器传入）
 	Start     int64  `json:"start"`
 	End       int64  `json:"end"`
 	Step      string `json:"step"`
 	Limit     int    `json:"limit"`
+	Offset    int    `json:"offset"` // 日志分页偏移（前端 Raw 翻页时下发）。后端透传给 OpenObserve _search 的 from。
 	Reverse   bool   `json:"reverse"`
 	Direction string `json:"direction"`
 	Ref       string `json:"ref"`
 	SkipCount bool   `json:"skip_count"`
+	// 告警评估相关（可由前端告警规则下发）。
+	Window      int64  `json:"window"`       // 评估窗口（秒）。0 表示用默认 defaultAlertWindow。
+	IngestDelay int64  `json:"ingest_delay"` // 摄入延迟容忍（秒）。0 表示用数据源配置或默认 defaultIngestDelay。
+	TimeField   string `json:"time_field"`   // 覆盖数据源配置的时间字段，默认 _timestamp。
+}
+
+// queryOrg 优先用查询里指定的组织，否则回退到数据源配置。
+func (oo *OpenObserve) queryOrg(q *Query) string {
+	if strings.TrimSpace(q.Org) != "" {
+		return q.Org
+	}
+	return oo.org()
+}
+
+// queryStream 优先用查询里指定的数据流，否则回退到数据源配置。
+func (oo *OpenObserve) queryStream(q *Query) string {
+	if strings.TrimSpace(q.Stream) != "" {
+		return q.Stream
+	}
+	return oo.stream()
+}
+
+// timeField 返回数据源配置的时间字段，缺省为 _timestamp。
+func (oo *OpenObserve) timeField() string {
+	if strings.TrimSpace(oo.TimeField) != "" {
+		return oo.TimeField
+	}
+	return defaultTimeField
+}
+
+// effectiveTimeField 解析实际生效的时间字段：查询级覆盖 > 数据源配置 > 默认 _timestamp。
+func (oo *OpenObserve) effectiveTimeField(q *Query) string {
+	if q != nil && strings.TrimSpace(q.TimeField) != "" {
+		return q.TimeField
+	}
+	return oo.timeField()
 }
 
 // HistogramQuery / HistogramValues mirror the Loki plugin's shapes so the
@@ -81,6 +127,8 @@ type Query struct {
 // a cross-plugin dependency on the loki datasource package.
 type HistogramQuery struct {
 	Query       string `json:"query"`
+	Org         string `json:"org"`
+	Stream      string `json:"stream"`
 	Start       int64  `json:"start"`
 	End         int64  `json:"end"`
 	Step        string `json:"step"`
@@ -172,6 +220,8 @@ func (oo *OpenObserve) Equal(other datasource.Datasource) bool {
 		oo.Stream == o.Stream &&
 		oo.ClusterName == o.ClusterName &&
 		oo.MaxQueryRows == o.MaxQueryRows &&
+		oo.TimeField == o.TimeField &&
+		oo.IngestDelay == o.IngestDelay &&
 		reflectDeepEqual(oo.Headers, o.Headers)
 }
 
@@ -233,18 +283,41 @@ func (oo *OpenObserve) QueryData(ctx context.Context, queryParam interface{}) ([
 
 	endMicros, startMicros := toMicros(param.End), toMicros(param.Start)
 	nowSec := time.Now().Unix()
+	// 告警引擎调用时通常 end/start 都为 0（未注入时间），此时进入「告警评估模式」。
+	alertMode := endMicros == 0 && startMicros == 0
 	if endMicros == 0 {
 		endMicros = nowSec * 1_000_000
 	}
 	if startMicros == 0 {
-		startMicros = endMicros - int64(defaultAlertWindow/time.Microsecond)
+		// 评估窗口可经查询下发（param.Window，秒），否则回退到默认 defaultAlertWindow。
+		window := param.Window
+		if window <= 0 {
+			window = int64(defaultAlertWindow / time.Second)
+		}
+		startMicros = endMicros - window*1_000_000
+	}
+
+	// 摄入延迟容忍：仅在告警评估模式（调用方未指定时间范围）下，把整个窗口回拨一段延迟，
+	// 避免漏掉尚未被 OpenObserve 摄入的最近数据。仪表盘预览（已带 start/end）不受影响。
+	if alertMode {
+		delay := param.IngestDelay
+		if delay <= 0 {
+			delay = oo.IngestDelay
+		}
+		if delay <= 0 {
+			delay = int64(defaultIngestDelay / time.Second)
+		}
+		if delay > 0 {
+			endMicros -= delay * 1_000_000
+			startMicros -= delay * 1_000_000
+		}
 	}
 
 	q := strings.TrimSpace(param.Query)
 
 	// 完整 SELECT：用户自写聚合/时间过滤（例如带 histogram() 的时间序列），直接透传。
 	if strings.HasPrefix(strings.ToLower(q), "select") {
-		resp, err := oo.doSearch(ctx, q, startMicros, endMicros, 0, defaultHistogramSize)
+		resp, err := oo.doSearch(ctx, oo.queryOrg(param), q, startMicros, endMicros, 0, defaultHistogramSize)
 		if err != nil {
 			return nil, err
 		}
@@ -254,12 +327,12 @@ func (oo *OpenObserve) QueryData(ctx context.Context, queryParam interface{}) ([
 	// 日志告警场景：用户填的是 WHERE 片段（或空），包成「匹配条数」序列，
 	// 触发器按 count > N 判断。每次评估产出一个瞬时点（等价于 Prometheus 即时向量），
 	// 由告警引擎的阈值触发器决定是否产生异常点。
+	tf := oo.effectiveTimeField(param)
 	var b strings.Builder
-	fmt.Fprintf(&b, `SELECT count(*) AS count FROM "%s" WHERE _timestamp BETWEEN %d AND %d`, oo.stream(), startMicros, endMicros)
-	if q != "" {
-		fmt.Fprintf(&b, " AND (%s)", q)
-	}
-	resp, err := oo.doSearch(ctx, b.String(), startMicros, endMicros, 0, 1)
+	fmt.Fprintf(&b, `SELECT count(*) AS count FROM "%s" WHERE %s BETWEEN %d AND %d`, oo.queryStream(param), tf, startMicros, endMicros)
+	// andClause 会忽略空串与 Loki 风格的 "*"（查全部），避免生成非法的 "AND (*)"。
+	b.WriteString(oo.andClause(q))
+	resp, err := oo.doSearch(ctx, oo.queryOrg(param), b.String(), startMicros, endMicros, 0, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -291,8 +364,8 @@ func (oo *OpenObserve) QueryLog(ctx context.Context, queryParam interface{}) ([]
 	param.Limit = oo.normalizeLimit(param.Limit)
 
 	start, end := toMicros(param.Start), toMicros(param.End)
-	sql := oo.buildLogSQL(param.Query, start, end, param.Limit)
-	resp, err := oo.doSearch(ctx, sql, start, end, 0, param.Limit)
+	sql := oo.buildLogSQL(param.Query, start, end, param.Limit, param.Offset, oo.queryStream(param))
+	resp, err := oo.doSearch(ctx, oo.queryOrg(param), sql, start, end, 0, param.Limit)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -321,8 +394,8 @@ func (oo *OpenObserve) QueryMapData(ctx context.Context, queryParam interface{})
 	}
 
 	start, end := toMicros(param.Start), toMicros(param.End)
-	sql := oo.buildLogSQL(param.Query, start, end, 1)
-	resp, err := oo.doSearch(ctx, sql, start, end, 0, 1)
+	sql := oo.buildLogSQL(param.Query, start, end, 1, 0, oo.queryStream(param))
+	resp, err := oo.doSearch(ctx, oo.queryOrg(param), sql, start, end, 0, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +414,7 @@ func (oo *OpenObserve) Test(ctx context.Context) error {
 	if err := oo.Validate(ctx); err != nil {
 		return err
 	}
-	if _, err := oo.doSearch(ctx, "SELECT 1", 0, 0, 0, 1); err != nil {
+	if _, err := oo.doSearch(ctx, oo.org(), "SELECT 1", 0, 0, 0, 1); err != nil {
 		return fmt.Errorf("openobserve connection test failed: %w", err)
 	}
 	return nil
@@ -349,11 +422,17 @@ func (oo *OpenObserve) Test(ctx context.Context) error {
 
 // --- label / field / histogram (UI support) ---
 
-func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start, end int64, filter string, limit int) ([]lokikit.FieldMeta, error) {
+func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start, end int64, filter string, limit int, org, stream string) ([]lokikit.FieldMeta, error) {
+	if org == "" {
+		org = oo.org()
+	}
+	if stream == "" {
+		stream = oo.stream()
+	}
 	startU, endU := toMicros(start), toMicros(end)
-	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE _timestamp BETWEEN %d AND %d%s LIMIT 1`,
-		oo.stream(), startU, endU, oo.andClause(query))
-	resp, err := oo.doSearch(ctx, sql, startU, endU, 0, 1)
+	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d%s LIMIT 1`,
+		stream, oo.timeField(), startU, endU, oo.andClause(query))
+	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -375,18 +454,24 @@ func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start,
 	return ret, nil
 }
 
-func (oo *OpenObserve) QueryLabelValues(ctx context.Context, query string, start, end int64, label, filter string, limit int) ([]lokikit.LabelValue, error) {
+func (oo *OpenObserve) QueryLabelValues(ctx context.Context, query string, start, end int64, label, filter string, limit int, org, stream string) ([]lokikit.LabelValue, error) {
 	if strings.TrimSpace(label) == "" {
 		return nil, fmt.Errorf("label is required")
+	}
+	if org == "" {
+		org = oo.org()
+	}
+	if stream == "" {
+		stream = oo.stream()
 	}
 	startU, endU := toMicros(start), toMicros(end)
 	lim := limit
 	if lim <= 0 {
 		lim = 100
 	}
-	sql := fmt.Sprintf(`SELECT DISTINCT "%s" FROM "%s" WHERE _timestamp BETWEEN %d AND %d%s LIMIT %d`,
-		label, oo.stream(), startU, endU, oo.andClause(query), lim)
-	resp, err := oo.doSearch(ctx, sql, startU, endU, 0, lim)
+	sql := fmt.Sprintf(`SELECT DISTINCT "%s" FROM "%s" WHERE %s BETWEEN %d AND %d%s LIMIT %d`,
+		label, stream, oo.timeField(), startU, endU, oo.andClause(query), lim)
+	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, lim)
 	if err != nil {
 		return nil, err
 	}
@@ -404,17 +489,23 @@ func (oo *OpenObserve) QueryLabelValues(ctx context.Context, query string, start
 	return ret, nil
 }
 
-func (oo *OpenObserve) QueryParsedFields(ctx context.Context, query string, start, end int64, limit int) ([]lokikit.FieldMeta, error) {
+func (oo *OpenObserve) QueryParsedFields(ctx context.Context, query string, start, end int64, limit int, org, stream string) ([]lokikit.FieldMeta, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	if limit > 500 {
 		limit = 500
 	}
+	if org == "" {
+		org = oo.org()
+	}
+	if stream == "" {
+		stream = oo.stream()
+	}
 	startU, endU := toMicros(start), toMicros(end)
-	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE _timestamp BETWEEN %d AND %d%s LIMIT %d`,
-		oo.stream(), startU, endU, oo.andClause(query), limit)
-	resp, err := oo.doSearch(ctx, sql, startU, endU, 0, limit)
+	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d%s LIMIT %d`,
+		stream, oo.timeField(), startU, endU, oo.andClause(query), limit)
+	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -439,17 +530,25 @@ func (oo *OpenObserve) QueryParsedFields(ctx context.Context, query string, star
 }
 
 func (oo *OpenObserve) QueryHistogram(ctx context.Context, q HistogramQuery) ([]HistogramValues, error) {
+	org := q.Org
+	if org == "" {
+		org = oo.org()
+	}
+	stream := q.Stream
+	if stream == "" {
+		stream = oo.stream()
+	}
 	startU, endU := toMicros(q.Start), toMicros(q.End)
 	unit := stepToUnit(q.Step)
-	sql := fmt.Sprintf(`SELECT count(*) AS value, date_trunc('%s', _timestamp) AS ts FROM "%s" WHERE _timestamp BETWEEN %d AND %d%s GROUP BY ts ORDER BY ts`,
-		unit, oo.stream(), startU, endU, oo.andClause(q.Query))
+	sql := fmt.Sprintf(`SELECT count(*) AS value, date_trunc('%s', %s) AS ts FROM "%s" WHERE %s BETWEEN %d AND %d%s GROUP BY ts ORDER BY ts`,
+		unit, oo.timeField(), stream, oo.timeField(), startU, endU, oo.andClause(q.Query))
 
-	resp, err := oo.doSearch(ctx, sql, startU, endU, 0, defaultHistogramSize)
+	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, defaultHistogramSize)
 	if err != nil {
 		// Fallback: a single aggregate point so the UI still renders something.
-		fallback := fmt.Sprintf(`SELECT count(*) AS value FROM "%s" WHERE _timestamp BETWEEN %d AND %d%s`,
-			oo.stream(), startU, endU, oo.andClause(q.Query))
-		fr, ferr := oo.doSearch(ctx, fallback, startU, endU, 0, 1)
+		fallback := fmt.Sprintf(`SELECT count(*) AS value FROM "%s" WHERE %s BETWEEN %d AND %d%s`,
+			stream, oo.timeField(), startU, endU, oo.andClause(q.Query))
+		fr, ferr := oo.doSearch(ctx, org, fallback, startU, endU, 0, 1)
 		if ferr != nil {
 			return nil, err
 		}
@@ -475,9 +574,104 @@ func (oo *OpenObserve) QueryHistogram(ctx context.Context, q HistogramQuery) ([]
 
 // --- helpers ---
 
+// httpGet 以数据源凭证对 OpenObserve 发起 GET 请求，用于拉取组织/数据流等元数据。
+func (oo *OpenObserve) httpGet(ctx context.Context, path string) ([]byte, error) {
+	if oo.HTTPClient == nil {
+		if err := oo.InitClient(); err != nil {
+			return nil, err
+		}
+	}
+	u, err := url.Parse(oo.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid oo.addr: %w", err)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if oo.Basic.User != "" {
+		req.SetBasicAuth(oo.Basic.User, oo.Basic.Pass)
+	}
+	for k, v := range oo.Headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := oo.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response failed: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openobserve request failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
+type ooOrgsResponse struct {
+	Data []struct {
+		Identifier string `json:"identifier"`
+		Name       string `json:"name"`
+	} `json:"data"`
+}
+
+// ListOrgs 列出 OpenObserve 中的组织（identifier）。
+func (oo *OpenObserve) ListOrgs(ctx context.Context) ([]string, error) {
+	body, err := oo.httpGet(ctx, "/api/organizations")
+	if err != nil {
+		return nil, err
+	}
+	var r ooOrgsResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("decode orgs failed: %w body=%s", err, string(body))
+	}
+	out := make([]string, 0, len(r.Data))
+	for _, o := range r.Data {
+		if o.Identifier != "" {
+			out = append(out, o.Identifier)
+		}
+	}
+	return out, nil
+}
+
+type ooStreamsResponse struct {
+	List []struct {
+		Name string `json:"name"`
+	} `json:"list"`
+}
+
+// ListStreams 列出某组织下的数据流（name）。
+func (oo *OpenObserve) ListStreams(ctx context.Context, org string) ([]string, error) {
+	if strings.TrimSpace(org) == "" {
+		org = oo.org()
+	}
+	body, err := oo.httpGet(ctx, "/api/"+org+"/streams")
+	if err != nil {
+		return nil, err
+	}
+	var r ooStreamsResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("decode streams failed: %w body=%s", err, string(body))
+	}
+	out := make([]string, 0, len(r.List))
+	for _, s := range r.List {
+		if s.Name != "" {
+			out = append(out, s.Name)
+		}
+	}
+	return out, nil
+}
+
 func (oo *OpenObserve) andClause(query string) string {
 	q := strings.TrimSpace(query)
-	if q == "" {
+	if q == "" || q == "*" {
+		// 空串与 Loki 风格的 "*"（查全部）都表示无额外过滤条件。
 		return ""
 	}
 	// A full custom SELECT is the caller's responsibility (no auto time filter).
@@ -487,18 +681,26 @@ func (oo *OpenObserve) andClause(query string) string {
 	return " AND (" + q + ")"
 }
 
-func (oo *OpenObserve) buildLogSQL(query string, startMicros, endMicros int64, limit int) string {
+func (oo *OpenObserve) buildLogSQL(query string, startMicros, endMicros int64, limit, offset int, stream string) string {
 	q := strings.TrimSpace(query)
 	if strings.HasPrefix(strings.ToLower(q), "select") {
-		// user-provided full SQL; they own the time filter
+		// user-provided full SQL; they own the time filter / aggregation.
+		// 兜底补一个 LIMIT，避免聚合结果无界返回；若用户已显式写了 LIMIT 则尊重之。
+		if limit > 0 && !regexp.MustCompile(`(?i)\blimit\s+\d`).MatchString(q) {
+			return fmt.Sprintf("%s LIMIT %d", q, limit)
+		}
 		return q
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, `SELECT * FROM "%s" WHERE _timestamp BETWEEN %d AND %d`, oo.stream(), startMicros, endMicros)
-	if q != "" {
-		fmt.Fprintf(&b, " AND (%s)", q)
+	fmt.Fprintf(&b, `SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d`, stream, oo.timeField(), startMicros, endMicros)
+	// andClause 会忽略空串与 Loki 风格的 "*"（查全部），避免生成非法的 "AND (*)"。
+	b.WriteString(oo.andClause(q))
+	// offset 由前端 Raw 翻页下发；生成标准 SQL 的 "LIMIT offset, limit" 实现分页。
+	if offset > 0 {
+		fmt.Fprintf(&b, " ORDER BY %s DESC LIMIT %d, %d", oo.timeField(), offset, limit)
+	} else {
+		fmt.Fprintf(&b, " ORDER BY %s DESC LIMIT %d", oo.timeField(), limit)
 	}
-	fmt.Fprintf(&b, " ORDER BY _timestamp DESC LIMIT %d", limit)
 	return b.String()
 }
 
@@ -512,7 +714,7 @@ func (oo *OpenObserve) normalizeLimit(limit int) int {
 	return limit
 }
 
-func (oo *OpenObserve) doSearch(ctx context.Context, sql string, startMicros, endMicros int64, from, size int) (*ooSearchResponse, error) {
+func (oo *OpenObserve) doSearch(ctx context.Context, org, sql string, startMicros, endMicros int64, from, size int) (*ooSearchResponse, error) {
 	if oo.HTTPClient == nil {
 		if err := oo.InitClient(); err != nil {
 			return nil, err
@@ -522,21 +724,24 @@ func (oo *OpenObserve) doSearch(ctx context.Context, sql string, startMicros, en
 	if err != nil {
 		return nil, fmt.Errorf("invalid oo.addr: %w", err)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/api/" + oo.org() + "/_search"
+	u.Path = strings.TrimRight(u.Path, "/") + "/api/" + org + "/_search"
 
 	q := url.Values{}
 	q.Set("type", "logs")
-	body := map[string]interface{}{
-		"query":       map[string]string{"sql": sql},
-		"from":        from,
-		"size":        size,
-		"search_type": "ui",
+	queryObj := map[string]interface{}{
+		"sql":  sql,
+		"from": from,
+		"size": size,
 	}
 	if startMicros > 0 {
-		body["start_time"] = startMicros
+		queryObj["start_time"] = startMicros
 	}
 	if endMicros > 0 {
-		body["end_time"] = endMicros
+		queryObj["end_time"] = endMicros
+	}
+	body := map[string]interface{}{
+		"query":       queryObj,
+		"search_type": "ui",
 	}
 
 	payload, err := json.Marshal(body)
@@ -787,7 +992,11 @@ func filterAndLimitStrings(in []string, filter string, limit int) []string {
 func decodeQueryParam(input interface{}, output interface{}) error {
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		WeaklyTypedInput: true,
-		Result:           output,
+		// 用 json tag 作为解码键，与前端下发的 JSON 字段名（query/org/stream/
+		// window/ingest_delay/time_field/skip_count 等）完全一致，避免下划线字段
+		// 因默认按字段名（ingestdelay/timefield）匹配而解码失败。
+		TagName: "json",
+		Result:  output,
 	})
 	if err != nil {
 		return err

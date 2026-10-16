@@ -24,6 +24,8 @@ type OpenObserveLabelNamesReq struct {
 	Cate         string `json:"cate"`
 	DatasourceId int64  `json:"datasource_id"`
 	Query        string `json:"query"`
+	Org          string `json:"org"`
+	Stream       string `json:"stream"`
 	Start        int64  `json:"start"`
 	End          int64  `json:"end"`
 	Filter       string `json:"filter"`
@@ -34,6 +36,8 @@ type OpenObserveLabelValuesReq struct {
 	Cate         string `json:"cate"`
 	DatasourceId int64  `json:"datasource_id"`
 	Query        string `json:"query"`
+	Org          string `json:"org"`
+	Stream       string `json:"stream"`
 	Start        int64  `json:"start"`
 	End          int64  `json:"end"`
 	Label        string `json:"label"`
@@ -45,6 +49,8 @@ type OpenObserveParsedFieldsReq struct {
 	Cate         string `json:"cate"`
 	DatasourceId int64  `json:"datasource_id"`
 	Query        string `json:"query"`
+	Org          string `json:"org"`
+	Stream       string `json:"stream"`
 	Start        int64  `json:"start"`
 	End          int64  `json:"end"`
 	Limit        int    `json:"limit"`
@@ -68,7 +74,7 @@ func (rt *Router) QueryOpenObserveLabelNames(c *gin.Context) {
 
 	oo := getOpenObserve(c, f.Cate, f.DatasourceId)
 	ctx := withCallContext(c.Request.Context(), f.DatasourceId, ginUser(c))
-	ret, err := oo.QueryLabelNames(ctx, f.Query, f.Start, f.End, f.Filter, f.Limit)
+	ret, err := oo.QueryLabelNames(ctx, f.Query, f.Start, f.End, f.Filter, f.Limit, f.Org, f.Stream)
 	ginx.Dangerous(err)
 	sort.Slice(ret, func(i, j int) bool {
 		return ret[i].Field < ret[j].Field
@@ -90,7 +96,7 @@ func (rt *Router) QueryOpenObserveLabelValues(c *gin.Context) {
 
 	oo := getOpenObserve(c, f.Cate, f.DatasourceId)
 	ctx := withCallContext(c.Request.Context(), f.DatasourceId, ginUser(c))
-	ret, err := oo.QueryLabelValues(ctx, f.Query, f.Start, f.End, f.Label, f.Filter, f.Limit)
+	ret, err := oo.QueryLabelValues(ctx, f.Query, f.Start, f.End, f.Label, f.Filter, f.Limit, f.Org, f.Stream)
 	ginx.Dangerous(err)
 	sort.Slice(ret, func(i, j int) bool {
 		return ret[i].Value < ret[j].Value
@@ -114,7 +120,7 @@ func (rt *Router) QueryOpenObserveParsedFields(c *gin.Context) {
 
 	oo := getOpenObserve(c, f.Cate, f.DatasourceId)
 	ctx := withCallContext(c.Request.Context(), f.DatasourceId, ginUser(c))
-	ret, err := oo.QueryParsedFields(ctx, f.Query, f.Start, f.End, f.Limit)
+	ret, err := oo.QueryParsedFields(ctx, f.Query, f.Start, f.End, f.Limit, f.Org, f.Stream)
 	ginx.Dangerous(err)
 	sort.Slice(ret, func(i, j int) bool {
 		return ret[i].Field < ret[j].Field
@@ -147,6 +153,49 @@ func (rt *Router) QueryOpenObserveHistogram(c *gin.Context) {
 		ginx.Dangerous(err)
 		ret = append(ret, data...)
 	}
+
+	ginx.NewRender(c).Data(ret, nil)
+}
+
+type OpenObserveOrgsReq struct {
+	Cate         string `json:"cate"`
+	DatasourceId int64  `json:"datasource_id"`
+}
+
+type OpenObserveStreamsReq struct {
+	Cate         string `json:"cate"`
+	DatasourceId int64  `json:"datasource_id"`
+	Org          string `json:"org"`
+}
+
+// ListOpenObserveOrgs 列出 OpenObserve 中的组织，供前端 Explorer 选择器使用。
+func (rt *Router) ListOpenObserveOrgs(c *gin.Context) {
+	var f OpenObserveOrgsReq
+	ginx.BindJSON(c, &f)
+	if !rt.Center.AnonymousAccess.PromQuerier && !CheckDsPerm(c, f.DatasourceId, f.Cate, f) {
+		ginx.Bomb(403, "no permission")
+	}
+
+	oo := getOpenObserve(c, f.Cate, f.DatasourceId)
+	ctx := withCallContext(c.Request.Context(), f.DatasourceId, ginUser(c))
+	ret, err := oo.ListOrgs(ctx)
+	ginx.Dangerous(err)
+
+	ginx.NewRender(c).Data(ret, nil)
+}
+
+// ListOpenObserveStreams 列出某组织下的数据流，供前端 Explorer 选择器使用。
+func (rt *Router) ListOpenObserveStreams(c *gin.Context) {
+	var f OpenObserveStreamsReq
+	ginx.BindJSON(c, &f)
+	if !rt.Center.AnonymousAccess.PromQuerier && !CheckDsPerm(c, f.DatasourceId, f.Cate, f) {
+		ginx.Bomb(403, "no permission")
+	}
+
+	oo := getOpenObserve(c, f.Cate, f.DatasourceId)
+	ctx := withCallContext(c.Request.Context(), f.DatasourceId, ginUser(c))
+	ret, err := oo.ListStreams(ctx, f.Org)
+	ginx.Dangerous(err)
 
 	ginx.NewRender(c).Data(ret, nil)
 }
