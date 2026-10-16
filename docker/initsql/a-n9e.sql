@@ -15,6 +15,7 @@ CREATE TABLE `users` (
     `roles` varchar(255) not null comment 'Admin | Standard | Guest, split by space',
     `contacts` varchar(1024) comment 'json e.g. {wecom:xx, dingtalk_robot_token:yy}',
     `maintainer` tinyint(1) not null default 0,
+    `disabled` int not null default 0 comment '0:enabled 1:disabled',
     `belong` varchar(191) DEFAULT '' COMMENT 'belong',
     `last_active_time` bigint DEFAULT 0 COMMENT 'last_active_time',
     `create_at` bigint not null default 0,
@@ -2236,9 +2237,11 @@ CREATE TABLE `source_token` (
     `source_type` varchar(64) NOT NULL DEFAULT '' COMMENT 'source type',
     `source_id` varchar(255) NOT NULL DEFAULT '' COMMENT 'source identifier',
     `token` varchar(255) NOT NULL DEFAULT '' COMMENT 'access token',
+    `note` varchar(255) NOT NULL DEFAULT '' COMMENT 'note',
     `expire_at` bigint NOT NULL DEFAULT 0 COMMENT 'expire timestamp',
     `create_at` bigint NOT NULL DEFAULT 0 COMMENT 'create timestamp',
     `create_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'creator',
     PRIMARY KEY (`id`),
-    KEY `idx_source_type_id_token` (`source_type`, `source_id`, `token`)
+    KEY `idx_source_type_id_token` (`source_type`, `source_id`, `token`),
+    KEY `idx_source_token_token` (`token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

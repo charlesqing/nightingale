@@ -284,6 +284,7 @@ func (rt *Router) Config(r *gin.Engine) {
 		pages.DELETE("/datasource/series", rt.auth(), rt.admin(), rt.deleteDatasourceSeries)
 		if rt.Center.AnonymousAccess.PromQuerier {
 			pages.Any("/proxy/:id/*url", rt.dsProxy)
+			pages.POST("/v2/query-batch", rt.queryBatchV2)
 			pages.POST("/query-range-batch", rt.promBatchQueryRange)
 			pages.POST("/query-instant-batch", rt.promBatchQueryInstant)
 			pages.GET("/datasource/brief", rt.datasourceBriefs)
@@ -325,14 +326,20 @@ func (rt *Router) Config(r *gin.Engine) {
 			pages.POST("/log-query", rt.QueryLog)
 			pages.POST("/es-cluster-info", rt.ESClusterInfo)
 		} else {
-			pages.Any("/proxy/:id/*url", rt.auth(), rt.dsProxy)
-			pages.POST("/query-range-batch", rt.auth(), rt.promBatchQueryRange)
-			pages.POST("/query-instant-batch", rt.auth(), rt.promBatchQueryInstant)
-			pages.GET("/datasource/brief", rt.auth(), rt.user(), rt.datasourceBriefs)
+			// proxy 也纳入分享 token 通道：dsProxy 内部按板内集合校验数据源，并只放行
+			// 只读查询路径（见 router_board_share.go isReadOnlyProxyPath），供 ES 面板与
+			// query 类型变量在匿名分享下取数；非 token 请求照常登录鉴权
+			pages.Any("/proxy/:id/*url", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), rt.dsProxy)
+			// 仪表盘限时分享：带有效 board 分享 token 的匿名请求可走以下查询接口，
+			// 数据源被收敛到板内引用集合（见 router_board_share.go），其余照常登录鉴权
+			pages.POST("/v2/query-batch", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), skipIfBoardToken(rt.user()), rt.queryBatchV2)
+			pages.POST("/query-range-batch", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), rt.promBatchQueryRange)
+			pages.POST("/query-instant-batch", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), rt.promBatchQueryInstant)
+			pages.GET("/datasource/brief", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), skipIfBoardToken(rt.user()), rt.datasourceBriefs)
 			pages.POST("/datasource/query", rt.auth(), rt.user(), rt.datasourceQuery)
 
-			pages.POST("/ds-query", rt.auth(), rt.user(), rt.QueryData)
-			pages.POST("/logs-query", rt.auth(), rt.user(), rt.QueryLogV2)
+			pages.POST("/ds-query", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), skipIfBoardToken(rt.user()), rt.QueryData)
+			pages.POST("/logs-query", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), skipIfBoardToken(rt.user()), rt.QueryLogV2)
 
 			pages.POST("/tdengine-databases", rt.auth(), rt.tdengineDatabases)
 			pages.POST("/tdengine-tables", rt.auth(), rt.tdengineTables)
@@ -353,7 +360,7 @@ func (rt *Router) Config(r *gin.Engine) {
 			pages.POST("/loki-parsed-fields", rt.auth(), rt.user(), rt.QueryLokiParsedFields)
 			pages.POST("/loki-histogram", rt.auth(), rt.user(), rt.QueryLokiHistogram)
 
-			pages.POST("/log-query-batch", rt.auth(), rt.user(), rt.QueryLogBatch)
+			pages.POST("/log-query-batch", rt.boardTokenDetect(), skipIfBoardToken(rt.auth()), skipIfBoardToken(rt.user()), rt.QueryLogBatch)
 
 			// 数据库元数据接口
 			pages.POST("/db-databases", rt.auth(), rt.user(), rt.ShowDatabases)
@@ -380,6 +387,7 @@ func (rt *Router) Config(r *gin.Engine) {
 		pages.POST("/auth/captcha", rt.jwtMock(), rt.generateCaptcha)
 		pages.POST("/auth/captcha-verify", rt.jwtMock(), rt.captchaVerify)
 		pages.GET("/auth/ifshowcaptcha", rt.ifShowCaptcha)
+		pages.GET("/auth/demo-login", rt.demoLogin)
 
 		pages.GET("/auth/sso-config", rt.ssoConfigNameGet)
 		pages.GET("/auth/rsa-config", rt.rsaConfigGet)
@@ -422,6 +430,7 @@ func (rt *Router) Config(r *gin.Engine) {
 		pages.GET("/user/:id/profile", rt.auth(), rt.userProfileGet)
 		pages.PUT("/user/:id/profile", rt.auth(), rt.user(), rt.perm("/users/put"), rt.userProfilePut)
 		pages.PUT("/user/:id/password", rt.auth(), rt.user(), rt.perm("/users/put"), rt.userPasswordPut)
+		pages.PUT("/user/:id/disabled", rt.auth(), rt.user(), rt.perm("/users/put"), rt.userDisabledPut)
 		pages.DELETE("/user/:id", rt.auth(), rt.user(), rt.perm("/users/del"), rt.userDel)
 
 		pages.GET("/metric-views", rt.auth(), rt.metricViewGets)
@@ -716,6 +725,7 @@ func (rt *Router) Config(r *gin.Engine) {
 		// AI Assistant Chat
 		pages.POST("/assistant/chat/new", rt.auth(), rt.user(), rt.assistantChatNew)
 		pages.GET("/assistant/chat/history", rt.auth(), rt.user(), rt.assistantChatHistory)
+		pages.POST("/assistant/chat/rename", rt.auth(), rt.user(), rt.assistantChatRename)
 		pages.DELETE("/assistant/chat/:chatId", rt.auth(), rt.user(), rt.assistantChatDel)
 
 		// AI Assistant Message
@@ -729,6 +739,8 @@ func (rt *Router) Config(r *gin.Engine) {
 
 		// source token 相关路由
 		pages.POST("/source-token", rt.auth(), rt.user(), rt.sourceTokenAdd)
+		pages.GET("/source-tokens", rt.auth(), rt.user(), rt.sourceTokenGets)
+		pages.DELETE("/source-token/:id", rt.auth(), rt.user(), rt.sourceTokenDel)
 
 		// for admin api
 		pages.GET("/user/busi-groups", rt.auth(), rt.admin(), rt.userBusiGroupsGets)
@@ -802,6 +814,12 @@ func (rt *Router) Config(r *gin.Engine) {
 		// 复用 /notification-channels/add 权限而不新增权限串：权限只定义在 cconf.builtInOps，
 		// 未进任何 SQL seed，新增串会导致所有存量部署必须手工授权后功能才可用。
 		pages.POST("/notify-channel-config/test", rt.auth(), rt.user(), rt.perm("/notification-channels/add"), rt.notifyChannelConfigTest)
+		// 原生对接媒介：保存前校验凭证（同测试接口的权限），以及通知规则里 Jira 的下拉数据（同 pagerduty 列表接口的权限）
+		pages.POST("/notify-channel-config/check", rt.auth(), rt.user(), rt.perm("/notification-channels/add"), rt.notifyChannelConfigCheck)
+		pages.GET("/jira-project-list/:id", rt.auth(), rt.user(), rt.jiraProjectList)
+		pages.GET("/jira-issue-type-list/:id", rt.auth(), rt.user(), rt.jiraIssueTypeList)
+		pages.GET("/jira-issue-type-check/:id", rt.auth(), rt.user(), rt.jiraIssueTypeCheck)
+		pages.GET("/jira-priority-list/:id", rt.auth(), rt.user(), rt.jiraPriorityList)
 		pages.GET("/notify-channel-config", rt.auth(), rt.user(), rt.notifyChannelGetBy)
 		pages.GET("/notify-channel-config/idents", rt.auth(), rt.user(), rt.notifyChannelIdentsGet)
 
@@ -953,6 +971,7 @@ func (rt *Router) Config(r *gin.Engine) {
 			// AI Assistant (for external service, reuses frontend handlers via serviceUser middleware)
 			service.POST("/assistant/chat/new", rt.serviceUser(), rt.assistantChatNew)
 			service.GET("/assistant/chat/history", rt.serviceUser(), rt.assistantChatHistory)
+			service.POST("/assistant/chat/rename", rt.serviceUser(), rt.assistantChatRename)
 			service.DELETE("/assistant/chat/:chatId", rt.serviceUser(), rt.assistantChatDel)
 			service.POST("/assistant/message/new", rt.serviceUser(), rt.assistantMessageNew)
 			service.POST("/assistant/message/detail", rt.serviceUser(), rt.assistantMessageDetail)
