@@ -732,7 +732,8 @@ func (oo *OpenObserve) doSearch(ctx context.Context, org, sql string, startMicro
 		}
 	}
 	// OpenObserve 官方全文检索函数（match_all 等）在部分 DataFusion 部署上不可用，
-	// 转发前改写为原生谓词；改写不了（探测不到字段）时保持原样，让上游错误如实暴露。
+	// 转发前改写为原生谓词；探测确认无可匹配行（空流/空窗）时改写为永假谓词，
+	// 仅探测失败时保持原样让上游错误如实暴露。
 	sql = oo.rewriteFullTextSQL(ctx, org, sql, startMicros, endMicros)
 	u, err := url.Parse(oo.Addr)
 	if err != nil {

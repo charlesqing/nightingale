@@ -94,7 +94,8 @@ func TestRewriteMatchAllSQL(t *testing.T) {
 }
 
 func TestRewriteMatchAllSQLNoFields(t *testing.T) {
-	// 探测不到候选字段时必须原样返回，让上游错误如实暴露
+	// rewriteMatchAllSQL 自身对空字段集保持原样（防御性契约）；调用方
+	// rewriteFullTextSQL 在探测确认无可匹配行时会改走 rewriteMatchAllToFalse
 	sql := `SELECT * FROM "default" WHERE match_all('error')`
 	if got := rewriteMatchAllSQL(sql, nil); got != sql {
 		t.Errorf("rewriteMatchAllSQL with no fields = %s, want unchanged", got)
@@ -102,6 +103,155 @@ func TestRewriteMatchAllSQLNoFields(t *testing.T) {
 	if got := rewriteMatchAllSQL(sql, []string{}); got != sql {
 		t.Errorf("rewriteMatchAllSQL with empty fields = %s, want unchanged", got)
 	}
+}
+
+func TestRewriteMatchAllToFalse(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{
+			name: "single call",
+			sql:  `SELECT * FROM "default" WHERE match_all('error')`,
+			want: `SELECT * FROM "default" WHERE false`,
+		},
+		{
+			name: "double quoted literal",
+			sql:  `SELECT * FROM "default" WHERE match_all("error")`,
+			want: `SELECT * FROM "default" WHERE false`,
+		},
+		{
+			name: "case insensitive function name",
+			sql:  `SELECT * FROM "default" WHERE MATCH_ALL('error')`,
+			want: `SELECT * FROM "default" WHERE false`,
+		},
+		{
+			name: "NOT form keeps prefix",
+			sql:  `SELECT * FROM "default" WHERE NOT match_all('error')`,
+			want: `SELECT * FROM "default" WHERE NOT false`,
+		},
+		{
+			name: "wrapped in parens",
+			sql:  `SELECT * FROM "default" WHERE (match_all('a'))`,
+			want: `SELECT * FROM "default" WHERE (false)`,
+		},
+		{
+			name: "multiple calls and combined conditions",
+			sql:  `SELECT * FROM "default" WHERE match_all('a') OR match_all("b") AND code >= 500`,
+			want: `SELECT * FROM "default" WHERE false OR false AND code >= 500`,
+		},
+		{
+			name: "no match_all call untouched",
+			sql:  `SELECT * FROM "default" WHERE log LIKE '%error%'`,
+			want: `SELECT * FROM "default" WHERE log LIKE '%error%'`,
+		},
+	}
+	for _, c := range cases {
+		if got := rewriteMatchAllToFalse(c.sql); got != c.want {
+			t.Errorf("%s:\n got: %s\nwant: %s", c.name, got, c.want)
+		}
+	}
+}
+
+func TestFullTextSearchFields(t *testing.T) {
+	f := func(name, typ string) ooStreamSchemaField { return ooStreamSchemaField{Name: name, Type: typ} }
+	cases := []struct {
+		name   string
+		schema []ooStreamSchemaField
+		fts    []string
+		want   []string
+	}{
+		{
+			name:   "default candidates intersect schema strings",
+			schema: []ooStreamSchemaField{f("_timestamp", "Int64"), f("code", "Int64"), f("log", "Utf8"), f("message", "Utf8"), f("level", "Utf8")},
+			want:   []string{"log", "message"},
+		},
+		{
+			name:   "empty schema keeps only _timestamp (empty stream)",
+			schema: []ooStreamSchemaField{f("_timestamp", "Int64")},
+			want:   nil,
+		},
+		{
+			name:   "fts keys take precedence over default candidates",
+			schema: []ooStreamSchemaField{f("_timestamp", "Int64"), f("log", "Utf8"), f("level", "Utf8"), f("event", "Utf8")},
+			fts:    []string{"level", "event"},
+			want:   []string{"level", "event"},
+		},
+		{
+			name:   "fts keys missing from schema yield nothing",
+			schema: []ooStreamSchemaField{f("log", "Utf8")},
+			fts:    []string{"not_exist"},
+			want:   nil,
+		},
+		{
+			name:   "duplicate fts keys deduplicated",
+			schema: []ooStreamSchemaField{f("log", "Utf8")},
+			fts:    []string{"log", "log"},
+			want:   []string{"log"},
+		},
+		{
+			name:   "non-utf8 types excluded, utf8 family accepted",
+			schema: []ooStreamSchemaField{f("log", "LargeUtf8"), f("error", "Binary"), f("msg", "Text"), f("body", "Int64"), f("content", "Utf8View")},
+			want:   []string{"log", "msg", "content"},
+		},
+		{
+			name:   "no string fields at all",
+			schema: []ooStreamSchemaField{f("_timestamp", "Int64"), f("code", "Int64"), f("took", "Float64")},
+			want:   nil,
+		},
+	}
+	for _, c := range cases {
+		if got := fullTextSearchFields(c.schema, c.fts); !equalStrings(got, c.want) {
+			t.Errorf("%s:\n got: %v\nwant: %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestSearchableFieldsFromRow(t *testing.T) {
+	cases := []struct {
+		name string
+		row  map[string]interface{}
+		want []string
+	}{
+		{
+			name: "candidate intersection wins",
+			row:  map[string]interface{}{"_timestamp": 1786801681627412, "code": float64(200), "log": "ok", "message": "ok"},
+			want: []string{"log", "message"},
+		},
+		{
+			name: "non-string candidate skipped",
+			row:  map[string]interface{}{"log": float64(123), "message": "text"},
+			want: []string{"message"},
+		},
+		{
+			name: "fallback to all string fields sorted when no candidate matches",
+			row:  map[string]interface{}{"code": float64(500), "event": "deploy", "app": "nginx"},
+			want: []string{"app", "event"},
+		},
+		{
+			name: "row without any string field",
+			row:  map[string]interface{}{"_timestamp": 1786801681627412, "code": float64(200)},
+			want: nil,
+		},
+	}
+	for _, c := range cases {
+		if got := searchableFieldsFromRow(c.row); !equalStrings(got, c.want) {
+			t.Errorf("%s:\n got: %v\nwant: %v", c.name, got, c.want)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRewriteSearchFunctionSQL(t *testing.T) {
