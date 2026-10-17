@@ -11,21 +11,25 @@ func TestOpenObserveSQLMethodDemo(t *testing.T) {
 	start, end := int64(1700000000000), int64(1700000060000) // 毫秒
 
 	// 1) 用户在 Explorer 里写的 WHERE 片段（最常见用法）
-	sql1 := oo.buildLogSQL("app = 'nginx' AND status = 500", start, end, 100, 0, "default")
+	sql1 := oo.buildLogSQL("app = 'nginx' AND status = 500", start, end, 100, 0, true, "default")
 	fmt.Println("CASE1 [WHERE片段/日志查询] =>", sql1)
 
 	// 2) 空查询（不带过滤）
-	sql2 := oo.buildLogSQL("", start, end, 100, 0, "default")
+	sql2 := oo.buildLogSQL("", start, end, 100, 0, true, "default")
 	fmt.Println("CASE2 [空查询]            =>", sql2)
 
 	// 3) 完整 SELECT（以 select 开头 → 原样透传给 OpenObserve）
 	full := `SELECT count(*) AS c FROM "default" WHERE _timestamp BETWEEN 1 AND 2 GROUP BY app`
-	sql3 := oo.buildLogSQL(full, start, end, 0, 0, "default")
+	sql3 := oo.buildLogSQL(full, start, end, 0, 0, true, "default")
 	fmt.Println("CASE3 [完整SELECT透传]    =>", sql3)
 
 	// 7) 分页：offset=200, limit=100 -> LIMIT 200, 100
-	sql7 := oo.buildLogSQL("app = 'nginx'", start, end, 100, 200, "default")
+	sql7 := oo.buildLogSQL("app = 'nginx'", start, end, 100, 200, true, "default")
 	fmt.Println("CASE7 [分页 offset=200]   =>", sql7)
+
+	// 8) reverse=false -> ORDER BY ASC（最旧在前，对齐 victorialogs 语义）
+	sql8 := oo.buildLogSQL("app = 'nginx'", start, end, 100, 0, false, "default")
+	fmt.Println("CASE8 [reverse=false]    =>", sql8)
 
 	// 4) andClause 怎么拼过滤条件
 	fmt.Println("CASE4 [andClause]         =>", oo.andClause("level = 'error'"))

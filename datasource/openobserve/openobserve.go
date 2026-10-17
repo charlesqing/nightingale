@@ -316,8 +316,13 @@ func (oo *OpenObserve) QueryData(ctx context.Context, queryParam interface{}) ([
 	q := strings.TrimSpace(param.Query)
 
 	// 完整 SELECT：用户自写聚合/时间过滤（例如带 histogram() 的时间序列），直接透传。
+	// size 上限防无界返回：查询显式下发 limit 时尊重之，否则用 defaultHistogramSize。
 	if strings.HasPrefix(strings.ToLower(q), "select") {
-		resp, err := oo.doSearch(ctx, oo.queryOrg(param), q, startMicros, endMicros, 0, defaultHistogramSize)
+		selectSize := defaultHistogramSize
+		if param.Limit > 0 {
+			selectSize = param.Limit
+		}
+		resp, err := oo.doSearch(ctx, oo.queryOrg(param), q, startMicros, endMicros, 0, selectSize)
 		if err != nil {
 			return nil, err
 		}
@@ -364,7 +369,7 @@ func (oo *OpenObserve) QueryLog(ctx context.Context, queryParam interface{}) ([]
 	param.Limit = oo.normalizeLimit(param.Limit)
 
 	start, end := toMicros(param.Start), toMicros(param.End)
-	sql := oo.buildLogSQL(param.Query, start, end, param.Limit, param.Offset, oo.queryStream(param))
+	sql := oo.buildLogSQL(param.Query, start, end, param.Limit, param.Offset, param.Reverse, oo.queryStream(param))
 	resp, err := oo.doSearch(ctx, oo.queryOrg(param), sql, start, end, 0, param.Limit)
 	if err != nil {
 		return nil, 0, err
@@ -394,7 +399,7 @@ func (oo *OpenObserve) QueryMapData(ctx context.Context, queryParam interface{})
 	}
 
 	start, end := toMicros(param.Start), toMicros(param.End)
-	sql := oo.buildLogSQL(param.Query, start, end, 1, 0, oo.queryStream(param))
+	sql := oo.buildLogSQL(param.Query, start, end, 1, 0, param.Reverse, oo.queryStream(param))
 	resp, err := oo.doSearch(ctx, oo.queryOrg(param), sql, start, end, 0, 1)
 	if err != nil {
 		return nil, err
@@ -681,7 +686,7 @@ func (oo *OpenObserve) andClause(query string) string {
 	return " AND (" + q + ")"
 }
 
-func (oo *OpenObserve) buildLogSQL(query string, startMicros, endMicros int64, limit, offset int, stream string) string {
+func (oo *OpenObserve) buildLogSQL(query string, startMicros, endMicros int64, limit, offset int, reverse bool, stream string) string {
 	q := strings.TrimSpace(query)
 	if strings.HasPrefix(strings.ToLower(q), "select") {
 		// user-provided full SQL; they own the time filter / aggregation.
@@ -695,11 +700,17 @@ func (oo *OpenObserve) buildLogSQL(query string, startMicros, endMicros int64, l
 	fmt.Fprintf(&b, `SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d`, stream, oo.timeField(), startMicros, endMicros)
 	// andClause 会忽略空串与 Loki 风格的 "*"（查全部），避免生成非法的 "AND (*)"。
 	b.WriteString(oo.andClause(q))
-	// offset 由前端 Raw 翻页下发；生成标准 SQL 的 "LIMIT offset, limit" 实现分页。
+	// reverse 语义对齐 victorialogs 的 resolveLogTimeDesc：true=最新在前（DESC）。
+	dir := "DESC"
+	if !reverse {
+		dir = "ASC"
+	}
+	// offset 由前端 Raw 翻页下发；生成 "LIMIT offset, limit" 实现分页
+	//（DataFusion 官方文档明确兼容该 MySQL 风格逗号语法，勿改为 OFFSET 写法）。
 	if offset > 0 {
-		fmt.Fprintf(&b, " ORDER BY %s DESC LIMIT %d, %d", oo.timeField(), offset, limit)
+		fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d, %d", oo.timeField(), dir, offset, limit)
 	} else {
-		fmt.Fprintf(&b, " ORDER BY %s DESC LIMIT %d", oo.timeField(), limit)
+		fmt.Fprintf(&b, " ORDER BY %s %s LIMIT %d", oo.timeField(), dir, limit)
 	}
 	return b.String()
 }
