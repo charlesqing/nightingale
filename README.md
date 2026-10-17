@@ -18,7 +18,8 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="https://n9e.github.io/">Documentation</a> ·
+  <a href="https://n9e.github.io/docs">Documentation</a> ·
+  <a href="https://n9e.github.io/download">Download</a> ·
   <a href="https://github.com/ccfos/nightingale/releases">Releases</a> ·
   <a href="#community">Community</a>
 </p>
@@ -29,7 +30,7 @@ Nightingale brings alert rules, event processing, and notification routing into 
 
 **Self-hosted · Apache-2.0 · Built-in AI agent · MCP server**
 
-![Nightingale queries Prometheus, VictoriaMetrics, Elasticsearch, Loki, ClickHouse, and PostgreSQL, evaluates alert rules, processes events, and routes notifications to Slack, PagerDuty, Discord, Email, Telegram, and Jira. The engine includes an AI agent and MCP server.](doc/img/readme/architecture-overseas.png)
+![Nightingale queries Prometheus, VictoriaMetrics, Elasticsearch, Loki, ClickHouse, and PostgreSQL, evaluates alert rules, processes events, and routes notifications to Slack, PagerDuty, Discord, Email, Telegram, and Jira. The engine includes an AI agent and MCP server.](doc/img/readme/architecture-overseas.svg)
 
 ## Why Nightingale?
 
@@ -123,7 +124,7 @@ Manage alert rules by data source and business group:
 
 For production, pin a release, configure credentials and TLS, back up the metadata database, and monitor rule evaluation and notification failures. Multiple Nightingale instances share a metadata database and Redis; use external time-series storage for a multi-instance deployment. The embedded TSDB stores data on one instance's local disk.
 
-See the [documentation](https://n9e.github.io/), [release notes](https://github.com/ccfos/nightingale/releases), and [security policy](SECURITY.md) for further guidance and supported versions.
+See the [documentation](https://n9e.github.io/docs), the [installation guide](https://n9e.github.io/docs/install/overview), [release notes](https://github.com/ccfos/nightingale/releases), and [security policy](SECURITY.md) for further guidance and supported versions.
 
 ## FAQ
 
