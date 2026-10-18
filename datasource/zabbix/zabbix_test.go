@@ -303,7 +303,7 @@ func TestQueryLogStartEndMilliseconds(t *testing.T) {
 				return "tok"
 			case "problem.get":
 				gotFrom, _ = params["time_from"].(float64)
-				gotTo, _ = params["time_to"].(float64)
+				gotTo, _ = params["time_till"].(float64)
 				return []map[string]interface{}{}
 			}
 			t.Fatalf("unexpected method %s", method)
@@ -324,7 +324,7 @@ func TestQueryLogStartEndMilliseconds(t *testing.T) {
 		t.Fatalf("rows = %d total = %d, want empty", len(rows), total)
 	}
 	if int64(gotFrom) != 1784452622 || int64(gotTo) != 1784456222 {
-		t.Fatalf("problem.get time_from/to = %v/%v, want 1784452622/1784456222 (seconds)", gotFrom, gotTo)
+		t.Fatalf("problem.get time_from/time_till = %v/%v, want 1784452622/1784456222 (seconds)", gotFrom, gotTo)
 	}
 }
 
@@ -405,7 +405,7 @@ func TestQueryDataAlertEngineWindow(t *testing.T) {
 				}
 			case "history.get":
 				gotFrom, _ = params["time_from"].(float64)
-				gotTo, _ = params["time_to"].(float64)
+				gotTo, _ = params["time_till"].(float64)
 				return []map[string]string{}
 			}
 			t.Fatalf("unexpected method %s", method)
@@ -424,7 +424,7 @@ func TestQueryDataAlertEngineWindow(t *testing.T) {
 	after := time.Now().Unix()
 
 	if int64(gotTo) < before || int64(gotTo) > after {
-		t.Fatalf("history.get time_to = %v, want ~now (%d..%d)", gotTo, before, after)
+		t.Fatalf("history.get time_till = %v, want ~now (%d..%d)", gotTo, before, after)
 	}
 	if int64(gotTo-gotFrom) != 120 {
 		t.Fatalf("window = %v, want 120 seconds", gotTo-gotFrom)

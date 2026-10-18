@@ -97,6 +97,12 @@ ops:
     - name: /targets/bind
       cname: Host - Bind Uncategorized
 
+- name: Zabbix
+  cname: Zabbix
+  ops:
+    - name: /zabbix/query
+      cname: Zabbix Monitoring Query - View
+
 - name: Explorer
   cname: Explorer
   ops:

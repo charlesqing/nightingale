@@ -150,9 +150,9 @@ func (z *Zabbix) token(ctx context.Context) (string, error) {
 	}
 
 	var tok string
-	// Zabbix user.login takes "user"/"password" (NOT "username" — the API
-	// rejects unknown params with -32602).
-	params := map[string]string{"user": z.User, "password": z.Password}
+	// Zabbix user.login takes "username"/"password" (NOT "user" — the API
+	// rejects unknown params with -32602). Verified against Zabbix 7.0.x.
+	params := map[string]string{"username": z.User, "password": z.Password}
 	if err := z.rpc(ctx, "", "user.login", params, &tok); err != nil {
 		return "", fmt.Errorf("zabbix user.login failed: %w", err)
 	}
@@ -268,7 +268,10 @@ func truncateForError(body []byte) string {
 // page calls it for "test connectivity & save".
 func (z *Zabbix) CheckHealth(ctx context.Context) error {
 	var version string
-	if err := z.do(ctx, "apiinfo.version", map[string]interface{}{}, &version); err != nil {
+	// apiinfo.version must be called WITHOUT the auth parameter — Zabbix
+	// rejects it with -32602 otherwise. So bypass do() (which always attaches
+	// a token) and call rpc directly with an empty auth.
+	if err := z.rpc(ctx, "", "apiinfo.version", map[string]interface{}{}, &version); err != nil {
 		return err
 	}
 	if version == "" {
@@ -277,10 +280,11 @@ func (z *Zabbix) CheckHealth(ctx context.Context) error {
 	return nil
 }
 
-// APIVersion returns the Zabbix server version (e.g. "7.0.22").
+// APIVersion returns the Zabbix server version (e.g. "7.0.22"). It is an
+// unauthenticated probe and must be called without the auth parameter.
 func (z *Zabbix) APIVersion(ctx context.Context) (string, error) {
 	var version string
-	if err := z.do(ctx, "apiinfo.version", map[string]interface{}{}, &version); err != nil {
+	if err := z.rpc(ctx, "", "apiinfo.version", map[string]interface{}{}, &version); err != nil {
 		return "", err
 	}
 	return version, nil

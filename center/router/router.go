@@ -307,10 +307,6 @@ func (rt *Router) Config(r *gin.Engine) {
 			pages.POST("/openobserve-histogram", rt.QueryOpenObserveHistogram)
 		pages.POST("/openobserve-orgs", rt.ListOpenObserveOrgs)
 		pages.POST("/openobserve-streams", rt.ListOpenObserveStreams)
-		pages.POST("/zabbix-version", rt.ZabbixVersion)
-		pages.POST("/zabbix-hostgroups", rt.ListZabbixHostGroups)
-		pages.POST("/zabbix-hosts", rt.ListZabbixHosts)
-		pages.POST("/zabbix-items", rt.ListZabbixItems)
 		pages.POST("/loki-label-names", rt.QueryLokiLabelNames)
 			pages.POST("/loki-label-values", rt.QueryLokiLabelValues)
 			pages.POST("/loki-parsed-fields", rt.QueryLokiParsedFields)
@@ -359,10 +355,6 @@ func (rt *Router) Config(r *gin.Engine) {
 			pages.POST("/openobserve-histogram", rt.auth(), rt.user(), rt.QueryOpenObserveHistogram)
 		pages.POST("/openobserve-orgs", rt.auth(), rt.user(), rt.ListOpenObserveOrgs)
 		pages.POST("/openobserve-streams", rt.auth(), rt.user(), rt.ListOpenObserveStreams)
-		pages.POST("/zabbix-version", rt.auth(), rt.user(), rt.ZabbixVersion)
-		pages.POST("/zabbix-hostgroups", rt.auth(), rt.user(), rt.ListZabbixHostGroups)
-		pages.POST("/zabbix-hosts", rt.auth(), rt.user(), rt.ListZabbixHosts)
-		pages.POST("/zabbix-items", rt.auth(), rt.user(), rt.ListZabbixItems)
 		pages.POST("/loki-label-names", rt.auth(), rt.user(), rt.QueryLokiLabelNames)
 			pages.POST("/loki-label-values", rt.auth(), rt.user(), rt.QueryLokiLabelValues)
 			pages.POST("/loki-parsed-fields", rt.auth(), rt.user(), rt.QueryLokiParsedFields)
@@ -382,6 +374,15 @@ func (rt *Router) Config(r *gin.Engine) {
 			pages.POST("/log-query", rt.auth(), rt.user(), rt.QueryLog)
 			pages.POST("/es-cluster-info", rt.auth(), rt.user(), rt.ESClusterInfo)
 		}
+
+		// Zabbix 集成路由：独立于 AnonymousAccess.PromQuerier 开关始终注册（需登录鉴权）。
+		// 否则在 PromQuerier=true 的匿名分支下这些路由不会被注册，请求会落到 SPA 兜底页。
+		pages.POST("/zabbix-version", rt.auth(), rt.user(), rt.ZabbixVersion)
+		pages.POST("/zabbix-hostgroups", rt.auth(), rt.user(), rt.ListZabbixHostGroups)
+		pages.POST("/zabbix-hosts", rt.auth(), rt.user(), rt.ListZabbixHosts)
+		pages.POST("/zabbix-items", rt.auth(), rt.user(), rt.ListZabbixItems)
+		pages.POST("/zabbix-host-search", rt.auth(), rt.user(), rt.SearchZabbixHosts)
+		pages.POST("/zabbix-latest-data", rt.auth(), rt.user(), rt.ListZabbixLatestData)
 
 		// OpenSearch 专用接口
 		pages.POST("/os-indices", rt.QueryOSIndices)

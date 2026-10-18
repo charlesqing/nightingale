@@ -1,6 +1,8 @@
 package zabbix
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strconv"
 )
@@ -24,12 +26,74 @@ func (h HostRef) DisplayName() string {
 	return h.Host
 }
 
+// HostGroupRef maps the "hostgroups" element nested in host.get
+// (selectHostGroups). It is the host-side mirror of HostGroup.
+type HostGroupRef struct {
+	GroupID string `json:"groupid"`
+	Name    string `json:"name"`
+}
+
 // Host maps host.get output.
 type Host struct {
-	HostID string `json:"hostid"`
-	Host   string `json:"host"`   // technical name
-	Name   string `json:"name"`   // visible name
-	Status string `json:"status"` // 0=monitored, 1=not monitored
+	HostID     string         `json:"hostid"`
+	Host       string         `json:"host"`   // technical name
+	Name       string         `json:"name"`   // visible name
+	Status     string         `json:"status"` // 0=monitored, 1=not monitored
+	Groups     []HostGroupRef `json:"hostgroups,omitempty"`
+	Interfaces []Interface    `json:"interfaces,omitempty"`
+}
+
+// Interface maps the host.get selectInterfaces element. IP is the agent or
+// SNMP/JMX address depending on type; only IP-based interfaces are useful for
+// the "search by IP" feature.
+type Interface struct {
+	InterfaceID string `json:"interfaceid"`
+	IP          string `json:"ip"`
+	DNS         string `json:"dns"`
+	Port        string `json:"port"`
+	Type        string `json:"type"` // 1=agent, 2=SNMP, 3=IPMI, 4=JMX
+	Main        string `json:"main"` // 1=primary interface of its type
+	// Available is the interface reachability flag maintained by the server:
+	// 0=unknown, 1=available, 2=unavailable. It is read-only and only
+	// meaningful for polled interface types.
+	Available string `json:"available,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// PrimaryInterface returns the primary agent interface, falling back to the
+// primary interface of any type, then to the first IP-bearing interface.
+//
+// The fallback matters for SNMP-only hosts, whose primary interface type is
+// 2: without it those hosts would show no address at all in the host list.
+func (h Host) PrimaryInterface() (Interface, bool) {
+	var fallback Interface
+	var found bool
+	for _, iface := range h.Interfaces {
+		if iface.Main == "1" && iface.Type == "1" {
+			return iface, true
+		}
+		if iface.IP == "" && iface.DNS == "" {
+			continue
+		}
+		if found && iface.Main != "1" && fallback.Main == "1" {
+			continue
+		}
+		if !found || (iface.Main == "1" && fallback.Main != "1") {
+			fallback = iface
+			found = true
+		}
+	}
+	return fallback, found
+}
+
+// PrimaryIP returns the primary agent interface IP, falling back to the first
+// non-empty IP of any type.
+func (h Host) PrimaryIP() string {
+	iface, ok := h.PrimaryInterface()
+	if !ok {
+		return ""
+	}
+	return iface.IP
 }
 
 func (h Host) DisplayName() string {
@@ -44,6 +108,49 @@ type HostGroup struct {
 	GroupID string `json:"groupid"`
 	Name    string `json:"name"`
 	UUID    string `json:"uuid,omitempty"`
+}
+
+// ValueMapMapping is one valuemap entry: Zabbix renders the raw value through
+// it before display (e.g. 0 -> "Up"). Type follows the server enum:
+// 0=equals, 1=greater or equal, 2=less or equal, 3=in range, 4=regexp,
+// 5=default.
+type ValueMapMapping struct {
+	Type     string `json:"type"`
+	Value    string `json:"value"`
+	NewValue string `json:"newvalue"`
+}
+
+// ValueMap maps item.get selectValueMap output.
+type ValueMap struct {
+	ValueMapID string            `json:"valuemapid"`
+	Name       string            `json:"name"`
+	Mappings   []ValueMapMapping `json:"mappings"`
+}
+
+// ValueMapList is the item.valuemap field. Zabbix usually returns an array,
+// but item.get emits a single object when the item has exactly one map (seen
+// against 7.0.31) — accept both, null decodes to nil.
+type ValueMapList []ValueMap
+
+func (l *ValueMapList) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '{' {
+		var single ValueMap
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return err
+		}
+		*l = ValueMapList{single}
+		return nil
+	}
+	var list []ValueMap
+	if err := json.Unmarshal(trimmed, &list); err != nil {
+		return err
+	}
+	*l = list
+	return nil
 }
 
 // Item maps item.get output. ValueType follows the Zabbix contract:
@@ -61,11 +168,52 @@ type Item struct {
 	TemplateID string    `json:"templateid,omitempty"`
 	LastValue  string    `json:"lastvalue"`
 	LastClock  string    `json:"lastclock"`
+	// PrevValue/LastNS/Delay/Description/Error/ValueMap back the "latest data"
+	// view (Zabbix Monitoring > Hosts > Latest data).
+	PrevValue   string       `json:"prevvalue,omitempty"`
+	LastNS      string       `json:"lastns,omitempty"`
+	Delay       string       `json:"delay,omitempty"`
+	Description string       `json:"description,omitempty"`
+	Error       string       `json:"error,omitempty"`
+	ValueMap    ValueMapList `json:"valuemap,omitempty"`
 }
 
 // IsNumeric reports whether the item can be charted (float / unsigned).
 func (i Item) IsNumeric() bool {
 	return i.ValueType == "0" || i.ValueType == "3"
+}
+
+// HistoryType maps value_type to the history.get "history" object type:
+// 0=float, 1=character, 2=log, 3=unsigned integer, 4=text.
+func (i Item) HistoryType() int {
+	switch i.ValueType {
+	case "0":
+		return 0
+	case "1":
+		return 1
+	case "2":
+		return 2
+	case "3":
+		return 3
+	case "4":
+		return 4
+	default:
+		return 0
+	}
+}
+
+// DisplayValue renders a raw value through the item's first value map.
+// Unmapped values (and items without a map) are returned unchanged.
+func (i Item) DisplayValue(raw string) string {
+	if raw == "" || len(i.ValueMap) == 0 {
+		return raw
+	}
+	for _, mapping := range i.ValueMap[0].Mappings {
+		if mapping.Type == "0" && mapping.Value == raw {
+			return mapping.NewValue
+		}
+	}
+	return raw
 }
 
 // History maps one history.get row. Clock is unix seconds.
