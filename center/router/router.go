@@ -152,6 +152,9 @@ func New(httpConfig httpx.Config, center cconf.Center, alert aconf.Alert, ibex c
 	// models 包级权威值，供 DB 写入(ai_skill_file) 与归档解压(aiagent/skill) 共用。
 	models.MaxFilesPerSkill = rt.Center.AIAgent.MaxFilesPerSkill
 
+	// 社区版 MCP 接入：把 agent 绑定的 enabled MCP 服务器包成工具源注入对话。
+	rt.AgentToolSourcesHook = rt.defaultAgentToolSources
+
 	// Skill 脚本执行的隔离 sandbox：启动期探测宿主能力、选定引擎（或在能力不足/
 	// 非 Linux 时禁用），全程只构建一次。run_skill_script 工具经 ToolDeps.Sandbox 用它。
 	rt.Sandbox = sandbox.New(rt.Center.Sandbox)
@@ -723,6 +726,15 @@ func (rt *Router) Config(r *gin.Engine) {
 		pages.POST("/ai-skills", rt.auth(), rt.user(), rt.perm("/ai-config/skills"), rt.aiSkillAdd)
 		pages.PUT("/ai-skill/:id", rt.auth(), rt.user(), rt.perm("/ai-config/skills"), rt.aiSkillPut)
 		pages.DELETE("/ai-skill/:id", rt.auth(), rt.user(), rt.perm("/ai-config/skills"), rt.aiSkillDel)
+
+		// MCP Servers
+		pages.GET("/mcp-servers", rt.auth(), rt.user(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerGets)
+		pages.GET("/mcp-servers/meta", rt.auth(), rt.user(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerMetaGets)
+		pages.GET("/mcp-server/:id", rt.auth(), rt.user(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerGet)
+		pages.POST("/mcp-servers", rt.auth(), rt.admin(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerAdd)
+		pages.PUT("/mcp-server/:id", rt.auth(), rt.admin(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerPut)
+		pages.DELETE("/mcp-server/:id", rt.auth(), rt.admin(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerDel)
+		pages.POST("/mcp-servers/test", rt.auth(), rt.admin(), rt.perm("/ai-config/mcp-servers"), rt.mcpServerTest)
 		pages.POST("/ai-skills/import", rt.auth(), rt.user(), rt.perm("/ai-config/skills"), rt.aiSkillImport)
 		pages.PUT("/ai-skill/:id/import", rt.auth(), rt.user(), rt.perm("/ai-config/skills"), rt.aiSkillImportUpdate)
 		pages.POST("/ai-skills/git/install", rt.auth(), rt.user(), rt.perm("/ai-config/skills"), rt.aiSkillGitInstall)

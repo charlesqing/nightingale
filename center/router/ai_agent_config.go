@@ -3,6 +3,7 @@ package router
 import (
 	"github.com/ccfos/nightingale/v6/aiagent"
 	"github.com/ccfos/nightingale/v6/aiagent/chat"
+	"github.com/ccfos/nightingale/v6/aiagent/mcpclient"
 	"github.com/ccfos/nightingale/v6/models"
 
 	"github.com/toolkits/pkg/logger"
@@ -107,4 +108,27 @@ func (rt *Router) agentToolSources(agent *models.AIAgent, me *models.User) []aia
 		return nil
 	}
 	return rt.AgentToolSourcesHook(agent, me)
+}
+
+// defaultAgentToolSources 是社区版的 AgentToolSourcesHook 实现：把 agent 绑定的
+// enabled MCP 服务器（agent.MCPServerIds）逐个包成 mcpclient.MCPSource 工具源。
+//
+// 单台服务器连接失败只降级跳过该源（与 appendSourceTools 的「单源失败不阻断」语义
+// 一致），不让一台坏 MCP 服务器拖垮整轮对话。详情接口传明文、列表遮蔽取值的策略见
+// models.MCPServer；这里走 MCPServersByIds（仅 enabled），被禁用的服务器自然从活跃
+// 工具集里剔除。
+func (rt *Router) defaultAgentToolSources(agent *models.AIAgent, me *models.User) []aiagent.ToolSource {
+	if len(agent.MCPServerIds) == 0 {
+		return nil
+	}
+	servers, err := models.MCPServersByIds(rt.Ctx, agent.MCPServerIds)
+	if err != nil {
+		logger.Warningf("[AIAgent] load mcp servers for agent=%d failed: %v", agent.Id, err)
+		return nil
+	}
+	sources := make([]aiagent.ToolSource, 0, len(servers))
+	for _, s := range servers {
+		sources = append(sources, mcpclient.NewMCPSource(s))
+	}
+	return sources
 }

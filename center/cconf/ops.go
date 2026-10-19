@@ -310,6 +310,8 @@ ops:
       cname: AI Config - LLM Configs
     - name: /ai-config/skills
       cname: AI Config - Skills
+    - name: /ai-config/mcp-servers
+      cname: AI Config - MCP Servers
 
 `
 )

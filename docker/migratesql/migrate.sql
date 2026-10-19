@@ -522,3 +522,25 @@ ALTER TABLE `source_token` ADD KEY `idx_source_token_token` (`token`);
    PostgreSQL 请执行：ALTER TABLE users ADD COLUMN disabled int NOT NULL DEFAULT 0;
    通常不需要手工执行，程序启动时的 AutoMigrate 会补上这一列 */
 ALTER TABLE `users` ADD COLUMN `disabled` int NOT NULL DEFAULT 0 COMMENT '0:enabled 1:disabled';
+
+/* v9 2026-10-18 mcp_server: 接入 Nightingale AI 的外部 MCP 服务器。AI Agent 通过
+   ai_agent.mcp_server_ids 绑定若干 MCP 服务器，运行时把它们包成工具源注入对话。
+   仅支持远程传输（sse / streamable-http）；headers 以 JSON 存明文（与 ai_skill.git_info
+   的 token 处理口径一致，仅授权用户可见）。通常不需要手工执行，程序启动时的
+   AutoMigrate 会建表 */
+CREATE TABLE `mcp_server` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `name` varchar(255) NOT NULL DEFAULT '' COMMENT 'mcp server name',
+    `description` varchar(4096) COMMENT 'description',
+    `transport` varchar(32) NOT NULL DEFAULT 'streamable-http' COMMENT 'transport: sse | streamable-http',
+    `url` varchar(2048) COMMENT 'remote endpoint (sse/streamable-http)',
+    `headers` text COMMENT 'auth/custom headers (JSON map)',
+    `timeout` int NOT NULL DEFAULT 30 COMMENT 'per-tool-call timeout (seconds)',
+    `enabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'enabled flag',
+    `created_at` bigint NOT NULL DEFAULT 0 COMMENT 'create time',
+    `created_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'creator',
+    `updated_at` bigint NOT NULL DEFAULT 0 COMMENT 'update time',
+    `updated_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'updater',
+    PRIMARY KEY (`id`),
+    KEY `idx_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='mcp servers';
