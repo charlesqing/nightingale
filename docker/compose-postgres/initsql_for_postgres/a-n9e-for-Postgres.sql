@@ -1046,3 +1046,39 @@ CREATE TABLE embedded_product (
     update_by varchar(64) NOT NULL DEFAULT '',
     weight int NOT NULL DEFAULT 0
 );
+/* v9 fork 2026-10-21: fork-added tables (mcp_server) and ai_agent
+   (upstream initsql gap, carries fork-added mcp_server_ids column).
+   Remaining upstream AI tables are created by AutoMigrate at startup. */
+
+CREATE TABLE ai_agent (
+    id bigserial PRIMARY KEY,
+    name varchar(255) NOT NULL DEFAULT '',
+    description varchar(1024) NOT NULL DEFAULT '',
+    use_case varchar(64) NOT NULL DEFAULT '',
+    llm_config_id bigint NOT NULL DEFAULT 0,
+    skill_ids text,
+    mcp_server_ids text,
+    enabled boolean NOT NULL DEFAULT false,
+    created_at bigint NOT NULL DEFAULT 0,
+    created_by varchar(64) NOT NULL DEFAULT '',
+    updated_at bigint NOT NULL DEFAULT 0,
+    updated_by varchar(64) NOT NULL DEFAULT ''
+);
+CREATE INDEX ai_agent_name_idx ON ai_agent (name);
+CREATE INDEX ai_agent_use_case_idx ON ai_agent (use_case);
+
+CREATE TABLE mcp_server (
+    id bigserial PRIMARY KEY,
+    name varchar(255) NOT NULL DEFAULT '',
+    description varchar(4096),
+    transport varchar(32) NOT NULL DEFAULT 'streamable-http',
+    url varchar(2048),
+    headers text,
+    timeout int NOT NULL DEFAULT 30,
+    enabled boolean NOT NULL DEFAULT false,
+    created_at bigint NOT NULL DEFAULT 0,
+    created_by varchar(64) NOT NULL DEFAULT '',
+    updated_at bigint NOT NULL DEFAULT 0,
+    updated_by varchar(64) NOT NULL DEFAULT ''
+);
+CREATE INDEX mcp_server_name_idx ON mcp_server (name);

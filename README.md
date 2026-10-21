@@ -169,7 +169,7 @@ curl -X POST http://localhost:17000/api/n9e/mcp-servers/test \
 > - MCP 服务器需支持**有状态会话**。FastMCP 部署不要加 `--stateless-http`，否则 go-sdk 握手报 `session not found`；
 > - n9e 所在网络需能直连 MCP 端点；若走代理，注意代理对请求目标的改写（回环/内网地址建议加入 `NO_PROXY`）；
 > - 模型需支持原生 function calling；小模型建议调大上下文窗口（如 Ollama `num_ctx 32768`），否则工具 schema 会被静默截断；
-> - **建表**：程序启动时 GORM AutoMigrate 会自动创建 `mcp_server` 表并为 `ai_agent` 补 `mcp_server_ids` 列，无需手工执行 SQL；如用 SQL 脚本管理库表，`docker/migratesql/migrate.sql` 已含对应 DDL（v9 2026-10-18 段）。
+> - **建表**：程序启动时 GORM AutoMigrate 会自动创建 `mcp_server` 表并为 `ai_agent` 补 `mcp_server_ids` 列，无需手工执行 SQL；SQL 脚本也已同步——全新部署用 `docker/initsql/a-n9e.sql`（含 `mcp_server` 与 `ai_agent` 表），存量升级用 `docker/migratesql/migrate.sql`（`v9 2026-10-18` 段），详见 [DEPLOY.md](DEPLOY.md) §6.4。
 
 ## 核心能力（继承自上游）
 

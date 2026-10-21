@@ -2245,3 +2245,45 @@ CREATE TABLE `source_token` (
     KEY `idx_source_type_id_token` (`source_type`, `source_id`, `token`),
     KEY `idx_source_token_token` (`token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+/* ------------------------------------------------------------------ */
+/* v9 fork 2026-10-21: 二开新增/扩展的表。补齐 AI Agent（上游 initsql 缺失，
+   fork 在其上新增 mcp_server_ids 列）与 MCP 服务器管理表。
+   其余上游 AI 表（ai_llm_config / ai_skill / assistant_* 等）仍未纳入
+   initsql（上游固有行为），由程序启动时的 AutoMigrate 自动创建。        */
+/* ------------------------------------------------------------------ */
+
+CREATE TABLE `ai_agent` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `name` varchar(255) NOT NULL DEFAULT '' COMMENT 'agent name',
+    `description` varchar(1024) NOT NULL DEFAULT '' COMMENT 'description',
+    `use_case` varchar(64) NOT NULL DEFAULT '' COMMENT 'use case, e.g. chat',
+    `llm_config_id` bigint NOT NULL DEFAULT 0 COMMENT 'bound ai_llm_config id',
+    `skill_ids` text COMMENT 'bound skill ids (JSON)',
+    `mcp_server_ids` text COMMENT 'bound mcp server ids (JSON)',
+    `enabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'enabled flag',
+    `created_at` bigint NOT NULL DEFAULT 0 COMMENT 'create time',
+    `created_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'creator',
+    `updated_at` bigint NOT NULL DEFAULT 0 COMMENT 'update time',
+    `updated_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'updater',
+    PRIMARY KEY (`id`),
+    KEY `idx_name` (`name`),
+    KEY `idx_use_case` (`use_case`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ai agents';
+
+CREATE TABLE `mcp_server` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `name` varchar(255) NOT NULL DEFAULT '' COMMENT 'mcp server name',
+    `description` varchar(4096) COMMENT 'description',
+    `transport` varchar(32) NOT NULL DEFAULT 'streamable-http' COMMENT 'transport: sse | streamable-http',
+    `url` varchar(2048) COMMENT 'remote endpoint (sse/streamable-http)',
+    `headers` text COMMENT 'auth/custom headers (JSON map)',
+    `timeout` int NOT NULL DEFAULT 30 COMMENT 'per-tool-call timeout (seconds)',
+    `enabled` tinyint(1) NOT NULL DEFAULT 0 COMMENT 'enabled flag',
+    `created_at` bigint NOT NULL DEFAULT 0 COMMENT 'create time',
+    `created_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'creator',
+    `updated_at` bigint NOT NULL DEFAULT 0 COMMENT 'update time',
+    `updated_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'updater',
+    PRIMARY KEY (`id`),
+    KEY `idx_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='mcp servers';

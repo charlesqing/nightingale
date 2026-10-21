@@ -1863,3 +1863,42 @@ CREATE TABLE task_host_99
     `stderr` text,
     unique (`id`, `host`)
 );
+
+/* v9 fork 2026-10-21: fork-added tables (mcp_server) and ai_agent
+   (upstream initsql gap, carries fork-added mcp_server_ids column).
+   Remaining upstream AI tables are created by AutoMigrate at startup. */
+
+CREATE TABLE ai_agent
+(
+    `id`             integer primary key autoincrement,
+    `name`           varchar(255) not null default '',
+    `description`    varchar(1024) not null default '',
+    `use_case`       varchar(64)  not null default '',
+    `llm_config_id`  bigint not null default 0,
+    `skill_ids`      text,
+    `mcp_server_ids` text,
+    `enabled`        boolean not null default false,
+    `created_at`     bigint not null default 0,
+    `created_by`     varchar(64) not null default '',
+    `updated_at`     bigint not null default 0,
+    `updated_by`     varchar(64) not null default ''
+);
+CREATE INDEX idx_ai_agent_name ON ai_agent (name);
+CREATE INDEX idx_ai_agent_use_case ON ai_agent (use_case);
+
+CREATE TABLE mcp_server
+(
+    `id`          integer primary key autoincrement,
+    `name`        varchar(255) not null default '',
+    `description` varchar(4096),
+    `transport`   varchar(32) not null default 'streamable-http',
+    `url`         varchar(2048),
+    `headers`     text,
+    `timeout`     int not null default 30,
+    `enabled`     boolean not null default false,
+    `created_at`  bigint not null default 0,
+    `created_by`  varchar(64) not null default '',
+    `updated_at`  bigint not null default 0,
+    `updated_by`  varchar(64) not null default ''
+);
+CREATE INDEX idx_mcp_server_name ON mcp_server (name);

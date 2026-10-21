@@ -184,6 +184,9 @@ scp docker/initsql/a-n9e.sql <部署机>:/tmp/
 mysql -h 127.0.0.1 -u root -p < /tmp/a-n9e.sql
 ```
 
+> - 只需导入 `a-n9e.sql` 一个脚本即可（`c-init.sql` 是 Docker MySQL 镜像初始化 root 密码用的，二进制部署不需要）；
+> - 脚本不包含上游 AI 模块的其余表（`ai_llm_config` / `ai_skill` / `assistant_*` 等，上游 initsql 固有缺口），首次启动 n9e 时 GORM AutoMigrate 会自动补齐——**导入后必须启动一次 n9e 再开始使用**。
+
 ### 6.2 systemd 托管（生产推荐）
 
 `/etc/systemd/system/n9e.service`：
@@ -232,10 +235,35 @@ docker compose up -d
 
 > compose-bridge 里的 n9e 镜像是上游官方镜像 `flashcatcloud/nightingale:latest`，**不含二开能力**。要体验二开功能，把其中 nightingale 服务的 `image:` 换成基于本教程产出的二进制自建镜像，或直接改用二进制 + systemd 部署。自建镜像 Dockerfile 思路：`FROM alpine` → 拷贝 `n9e` 与 `etc/` → `ENTRYPOINT ["/n9e"]`。
 
-### 6.4 关于数据库表结构（二开新增部分）
+### 6.4 数据库初始化流程与二开表结构同步说明
 
-- **全新部署**：基础表用 `docker/initsql/a-n9e.sql` 初始化；本分支新增的 `mcp_server` 表及 `ai_agent.mcp_server_ids` 列由程序启动时的 GORM AutoMigrate **自动创建**，无需任何手工 SQL；
-- **存量库升级**（从上游 v9.x 升到本分支）：可选执行 `docker/migratesql/migrate.sql` 中 `v9 2026-10-18` 段的 DDL，或直接启动程序让 AutoMigrate 自动补齐。
+**二进制部署的完整初始化流程**（MySQL 为例）：
+
+```bash
+# 1) 准备库与账号（可跳过，a-n9e.sql 自带 create database n9e_v6）
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS n9e_v6 DEFAULT CHARSET utf8mb4;
+                     CREATE USER IF NOT EXISTS 'n9e'@'%' IDENTIFIED BY '你的密码';
+                     GRANT ALL ON n9e_v6.* TO 'n9e'@'%';"
+
+# 2) 导入基础表（含全部上游表 + 二开新增表）
+mysql -u root -p n9e_v6 < a-n9e.sql
+
+# 3) 启动 n9e —— AutoMigrate 自动补齐 initsql 未覆盖的表（上游 AI 模块其余表）
+#    并校准已有表结构；首次启动后即可正常使用
+```
+
+**SQLite**（`etc/config.toml` 保持 `DBType = "sqlite"`）：数据库文件 `DSN` 指定的 `n9e.db` 不存在时由程序自动创建并 AutoMigrate 全量建表，也可预先执行 `docker/sqlite.sql`。**PostgreSQL**：导入 `docker/compose-postgres/initsql_for_postgres/a-n9e-for-Postgres.sql` 后启动。**存量库升级**（上游 v9.x → 本分支）：`docker/migratesql/migrate.sql` 已含二开全部 DDL（`v9 2026-10-18` 段），可选执行或直接启动让 AutoMigrate 自动补齐。
+
+**二开新增模块的表结构同步情况**（已核对模型定义 `models/mcp_server.go`、`models/ai_agent.go` 与全部 SQL 脚本）：
+
+| 脚本 | `mcp_server` 表 | `ai_agent` 表（含二开新增 `mcp_server_ids` 列） | 说明 |
+| --- | --- | --- | --- |
+| `docker/initsql/a-n9e.sql`（MySQL 全新部署） | ✅ 本次补充 | ✅ 本次补充 | 上游 initsql 原本连 `ai_agent` 都没有；本次追加了 `ai_agent`（带 `mcp_server_ids` text 列，`idx_name`/`idx_use_case` 索引）与 `mcp_server`（`idx_name` 索引）两个 CREATE TABLE |
+| `docker/sqlite.sql`（SQLite 全新部署） | ✅ 本次补充 | ✅ 本次补充 | 按 SQLite 方言（`integer primary key autoincrement` + 独立 `CREATE INDEX`）追加同两张表 |
+| `docker/compose-postgres/initsql_for_postgres/a-n9e-for-Postgres.sql` | ✅ 本次补充 | ✅ 本次补充 | 按 PostgreSQL 方言（`bigserial PRIMARY KEY` + 独立 `CREATE INDEX`）追加同两张表 |
+| `docker/migratesql/migrate.sql`（存量库升级） | ✅ 二开时已含 | ✅ 二开时已含 | `v9 2026-10-18` 段的 MySQL DDL，与模型定义逐列一致 |
+
+DDL 与 GORM 模型的对应关系已逐列核对：`mcp_server` 的 12 个持久化列（id/name/description/transport/url/headers/timeout/enabled/created_at/created_by/updated_at/updated_by）及默认值（`transport` 默认 `streamable-http`、`timeout` 默认 30、`enabled` 默认 0）与 `models/mcp_server.go` 完全一致；`ai_agent.mcp_server_ids` 为 `text` 类型存 JSON 数组（`serializer:json`），与 `models/ai_agent.go:22` 一致。**冗余兜底**：即便使用不含这些 DDL 的旧脚本初始化，AutoMigrate 也会在启动时自动建表/补列，因此该同步是"脚本与模型对齐"而非功能必需。
 
 ---
 
