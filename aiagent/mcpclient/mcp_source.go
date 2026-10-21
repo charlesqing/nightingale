@@ -59,6 +59,7 @@ func (s *MCPSource) DiscoverTools(ctx context.Context) ([]aiagent.AgentTool, err
 // CallTool 调用本源中名为 tool.Name 的工具，返回给 LLM 的纯文本结果。
 func (s *MCPSource) CallTool(ctx context.Context, tool *aiagent.AgentTool, args map[string]interface{}) (string, error) {
 	var sb strings.Builder
+	isError := false
 	err := s.withSession(ctx, func(session *mcp.ClientSession) error {
 		res, err := session.CallTool(ctx, &mcp.CallToolParams{
 			Name:      tool.Name,
@@ -67,6 +68,9 @@ func (s *MCPSource) CallTool(ctx context.Context, tool *aiagent.AgentTool, args 
 		if err != nil {
 			return err
 		}
+		// IsError 表示工具在服务端执行失败（协议调用本身成功）：
+		// 透传内容但打上错误标记，让模型把本轮观测当失败处理并决定重试或换路。
+		isError = res.IsError
 		for _, c := range res.Content {
 			if tc, ok := c.(*mcp.TextContent); ok {
 				sb.WriteString(tc.Text)
@@ -77,7 +81,11 @@ func (s *MCPSource) CallTool(ctx context.Context, tool *aiagent.AgentTool, args 
 	if err != nil {
 		return "", err
 	}
-	return sb.String(), nil
+	out := sb.String()
+	if isError {
+		out = "Error (MCP tool reported failure): " + out
+	}
+	return out, nil
 }
 
 // withSession 以 server.Timeout 为上限开一次 MCP 会话，执行 fn 后确保关闭。
@@ -160,10 +168,12 @@ type headerRoundTripper struct {
 }
 
 func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// RoundTrip 约定不得修改传入请求：clone 后再注入 headers（并发安全）。
+	r := req.Clone(req.Context())
 	for k, v := range h.headers {
-		req.Header.Set(k, v)
+		r.Header.Set(k, v)
 	}
-	return h.rt.RoundTrip(req)
+	return h.rt.RoundTrip(r)
 }
 
 // validateMCPURL 做最小化的 SSRF 防护：仅放行 http/https，并拒绝云元数据地址

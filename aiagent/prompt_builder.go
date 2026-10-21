@@ -141,6 +141,42 @@ func (a *Agent) appendSkillCatalog(sb *strings.Builder, rc *runCtx) {
 	sb.WriteString("\n")
 }
 
+// appendExternalToolCatalog 在系统提示词列出外部工具源（MCP 等）提供的工具，
+// 供模型把它们与内置工具同等对待。无外部工具时不输出。
+func (a *Agent) appendExternalToolCatalog(sb *strings.Builder, rc *runCtx) {
+	var lines []string
+	for i := range rc.tools {
+		t := &rc.tools[i]
+		if t.Type != ToolTypeExternal {
+			continue
+		}
+		desc := t.Description
+		if i := strings.IndexByte(desc, '\n'); i >= 0 {
+			desc = desc[:i]
+		}
+		if desc == "" {
+			desc = "(no description)"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", t.Name, desc))
+	}
+	if len(lines) == 0 {
+		return
+	}
+
+	sb.WriteString("## External MCP Tools (admin-connected)\n\n")
+	sb.WriteString(`The following tools are provided by external MCP servers connected by the
+administrator. They are first-class capabilities — when the user's request matches
+one of them (or explicitly names it), call it directly via the function-calling
+interface like any other tool:
+
+`)
+	for _, l := range lines {
+		sb.WriteString(l)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+}
+
 // buildNativeSystemPrompt 构建工具循环模式的系统提示词：注入 Skills 与环境信息。
 // 不在提示词里铺工具说明——工具经原生 tools 参数下发（见 buildNativeToolDefs）。
 func (a *Agent) buildNativeSystemPrompt(rc *runCtx) string {
@@ -162,8 +198,19 @@ func (a *Agent) buildNativeSystemPrompt(rc *runCtx) string {
 		sb.WriteString("**Important**: Follow the workflow and guidelines defined in the loaded Skills when applicable.\n\n")
 	}
 
+	// action 级长政策（chat 路径经 SystemPromptExtra 注入，见字段注释）
+	if a.cfg.SystemPromptExtra != "" {
+		sb.WriteString(a.cfg.SystemPromptExtra)
+		sb.WriteString("\n\n")
+	}
+
 	// 可用技能目录（按需 load_skill）
 	a.appendSkillCatalog(&sb, rc)
+
+	// 外部 MCP 工具清单：rc.tools 此时已含 appendSourceTools 发现的外部工具。
+	// 在提示词里显式点名（名字+描述），否则 75+ 工具的原生 tools 数组里它们
+	// 排在尾部、提示词政策又只枚举内置工具，小模型会宣称"找不到该工具"。
+	a.appendExternalToolCatalog(&sb, rc)
 
 	sb.WriteString(llm.BuildEnvSection())
 

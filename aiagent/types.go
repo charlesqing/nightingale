@@ -95,6 +95,12 @@ type AgentConfig struct {
 	// 两者互斥：若 UserPromptRendered 非空优先用它。
 	UserPromptRendered string `json:"-"`
 
+	// SystemPromptExtra 追加到系统提示词末尾（buildNativeSystemPrompt 内拼接）。
+	// chat 路径用它承载 action 级长政策（工具使用规则、领域限制等）：实证表明
+	// 长指令放 user 消息会压制小模型的原生 tool_calls（5.7K 包装层即可让
+	// qwen3.5:9b 从 tool_use 退化为文本模拟），放 system 则无此效应。
+	SystemPromptExtra string `json:"-"`
+
 	// 工具定义
 	Tools []AgentTool `json:"tools"`
 }

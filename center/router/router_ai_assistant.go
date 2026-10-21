@@ -454,6 +454,12 @@ func (rt *Router) processAssistantMessage(parentCtx context.Context, parentCance
 	if handler.BuildPrompt != nil {
 		userPrompt = handler.BuildPrompt(chatReq)
 	}
+	// action 级长政策走系统提示词（SystemPromptExtra）：实证表明长指令放 user
+	// 消息会压制小模型的原生 tool_calls（见 chat.ActionHandler.BuildSystemExtra）。
+	systemExtra := ""
+	if handler.BuildSystemExtra != nil {
+		systemExtra = handler.BuildSystemExtra(chatReq)
+	}
 	// Pin LLM output to the UI language. Appended AFTER the action-specific
 	// prompt so it lands at the tail of the agent's system instruction — the
 	// position LLMs weight highest for "respond in X" directives. Empty lang
@@ -499,6 +505,7 @@ func (rt *Router) processAssistantMessage(parentCtx context.Context, parentCance
 		Timeout:            agentTotalTimeout,
 		Stream:             true,
 		UserPromptRendered: userPrompt,
+		SystemPromptExtra:  systemExtra,
 		GuidedFollowup:     true, // 交互式 chat：末尾给可点选的"下一步"建议
 		Skills:             skillCfg,
 		ToolSources:        rt.agentToolSources(agent, me),
