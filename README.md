@@ -35,7 +35,7 @@
 
 ## 快速开始
 
-与上游一致。安装 Git 和 Docker Compose 后，启动自带评估栈：
+本地评估可启动上游自带的 Docker Compose 评估栈（注意：其中 n9e 容器是**上游官方镜像**，不含本分支的 Zabbix / OpenObserve / MCP 管理能力，仅用于熟悉夜莺界面）：
 
 ```bash
 git clone https://github.com/ccfos/nightingale.git
@@ -45,16 +45,19 @@ docker compose up -d
 
 打开 [http://localhost:17000](http://localhost:17000)，使用 **`root` / `root.2020`** 登录。
 
-从源码构建本分支（Windows 开发机上已验证的全链流程）：
+**体验本分支全部能力需从源码构建**（前端仓库与本仓库，两仓库并排放置）：
 
 ```bash
 # 1. 构建前端（仓库 nightingale-fe，产物 pub/）
 cd nightingale-fe && npm ci && npm run build
 
-# 2. 前端资产嵌入 + 后端编译（仓库根目录）
+# 2. 前端资产嵌入 + 后端编译（后端仓库根目录）
+cd ../nightingale
 ./build-with-fe.sh            # 版本号自动读取前端 package.json
 ./n9e -version                # 验证版本
 ```
+
+完整的环境要求、systemd 部署与验证步骤见 [DEPLOY.md](DEPLOY.md)。
 
 > ⚠️ `build-with-fe.sh` 会把**当前前端仓库**的 pub/ 嵌入二进制（statik），不会拉取官方前端，OpenObserve/Zabbix 等 UI 改动因此得以保留。`front/statik/statik.go` 是生成文件，改动后需重新生成。
 

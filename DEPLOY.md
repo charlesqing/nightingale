@@ -30,7 +30,7 @@
 | 工具 | 版本要求 | 说明 |
 | --- | --- | --- |
 | Go | **≥ 1.25**（`go.mod` 声明 1.25.0） | [go.dev/dl](https://go.dev/dl/) |
-| Node.js | ≥ 18（Vite 5 要求；验证过 Node 20/22） | [nodejs.org](https://nodejs.org/) |
+| Node.js | ≥ 18（实测 Node 20/22） | [nodejs.org](https://nodejs.org/) |
 | npm | 随 Node 附带 | — |
 | Git | 任意近期版本 | — |
 | statik | 无需预装 | 脚本检测到缺失时自动 `go install github.com/rakyll/statik@latest` |
@@ -109,7 +109,8 @@ go install github.com/rakyll/statik@latest
 "$(go env GOPATH)/bin/statik" -src=pub -dest=front -f
 
 # 4) 编译二进制并注入版本号
-go build -ldflags "-X github.com/ccfos/nightingale/v6/pkg/version.Version=$(cat ../nightingale-fe/package.json | grep -oP '(?<="version": ")[^"]+')" -o n9e ./cmd/center/main.go
+FE_VERSION="$(node -e "console.log(require('../nightingale-fe/package.json').version)")"
+go build -ldflags "-X github.com/ccfos/nightingale/v6/pkg/version.Version=$FE_VERSION" -o n9e ./cmd/center/main.go
 ```
 
 验证：
@@ -150,11 +151,15 @@ Linux 原生环境（推荐的生产构建方式）无需任何改动，直接 `
 # 部署机
 mkdir -p /opt/n9e/{etc,logs}
 cp n9e /opt/n9e/
-cp -r etc/config.toml etc/template /opt/n9e/etc/   # 配置与看板模板
+
+# 从源码仓库拷贝运行所需的 etc 内容：
+# config.toml 主配置；metrics.yaml 数据源类型定义（启动时 cconf 读取）；
+# script 告警执行脚本目录
+cp -r etc/config.toml etc/metrics.yaml etc/script /opt/n9e/etc/
 cd /opt/n9e
 ```
 
-编辑 `/opt/n9e/etc/config.toml` 关键段：
+编辑 `/opt/n9e/etc/config.toml` 关键段（注意：本版本 `[DB]` 用 **DSN** 而非分离的 Host/User 键；默认 `DBType = "sqlite"`，生产改 MySQL）：
 
 ```toml
 [HTTP]
@@ -162,18 +167,21 @@ Host = "0.0.0.0"
 Port = 17000
 
 [DB]
-Host = "127.0.0.1"        # MySQL 地址
-User = "n9e"
-Password = "n9e密码"
+DBType = "mysql"
+DSN = "n9e:你的密码@tcp(127.0.0.1:3306)/n9e_v6?charset=utf8mb4&collation=utf8mb4_general_ci&parseTime=True&loc=Local"
 
 [Redis]
 Address = "127.0.0.1:6379"
+RedisType = "standalone"   # 默认 "miniredis"（进程内内存 Redis，仅单进程）；连接外部 Redis 必须显式改 standalone
 ```
 
-初始化数据库（二开会新增的 `mcp_server` 表等**无需手工建**，见 6.4 说明）：
+初始化数据库（先在源码仓库把 SQL 拷到部署机；二开会新增的 `mcp_server` 表等**无需手工建**，见 6.4 说明）：
 
 ```bash
-mysql -h 127.0.0.1 -u root -p < docker/initsql/a-n9e.sql   # 建基础库表
+# 在源码 checkout 目录执行拷贝：
+scp docker/initsql/a-n9e.sql <部署机>:/tmp/
+# 在部署机执行初始化（脚本自带 create database n9e_v6）：
+mysql -h 127.0.0.1 -u root -p < /tmp/a-n9e.sql
 ```
 
 ### 6.2 systemd 托管（生产推荐）
@@ -215,10 +223,11 @@ systemctl status n9e
 
 ### 6.3 Docker Compose（快速体验）
 
+在**源码 checkout 目录**执行（compose-bridge 会拉起 MySQL + Redis + VictoriaMetrics + Categraf + n9e 全套）：
+
 ```bash
 cd docker/compose-bridge
 docker compose up -d
-# 自带 MySQL + Redis + VictoriaMetrics + Categraf + n9e
 ```
 
 > compose-bridge 里的 n9e 镜像是上游官方镜像 `flashcatcloud/nightingale:latest`，**不含二开能力**。要体验二开功能，把其中 nightingale 服务的 `image:` 换成基于本教程产出的二进制自建镜像，或直接改用二进制 + systemd 部署。自建镜像 Dockerfile 思路：`FROM alpine` → 拷贝 `n9e` 与 `etc/` → `ENTRYPOINT ["/n9e"]`。
