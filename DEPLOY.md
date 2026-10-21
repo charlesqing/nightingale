@@ -65,7 +65,7 @@ git clone <本仓库地址> nightingale
 git clone <前端仓库地址> nightingale-fe
 ```
 
-**目录约定**：`build-with-fe.sh` 默认在前端仓库的**同级目录**找 `../nightingale-fe`。如果你的目录布局不同，用环境变量显式指定：
+**目录约定**：`build-with-fe.sh` 默认在**后端仓库的上一级目录**下找 `nightingale-fe`（即前端仓库与后端仓库互为同级目录）。例如后端在 `/opt/n9e-build/nightingale`，前端就应放在 `/opt/n9e-build/nightingale-fe`。如果实际布局不同，用环境变量显式指定：
 
 ```bash
 FE_ROOT=/path/to/nightingale-fe ./build-with-fe.sh
