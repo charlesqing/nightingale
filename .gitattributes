@@ -3,3 +3,11 @@
 *.js   linguist-language=go
 *.tsx  linguist-language=go
 *.html linguist-language=go
+
+# Shell assets embedded via go:embed must stay LF in the working tree:
+# go:embed packages the on-disk file verbatim, and with core.autocrlf=true
+# a CRLF checkout ships \r into the binary, breaking `bash install.sh`
+# on Linux with "set: invalid option name: pipefail".
+*.sh  text eol=lf
+*.tmpl text eol=lf
+center/router/agentassets/categraf.version text eol=lf
