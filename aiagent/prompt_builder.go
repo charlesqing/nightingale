@@ -175,6 +175,12 @@ interface like any other tool:
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+	sb.WriteString(`Important: this catalog only lists AVAILABLE tools. Never claim a tool has
+been called unless its result actually appears in the current conversation. When
+the user asks whether MCP was used, report only the tools invoked in this session
+(you can see them by the tool-result messages in context), not the whole catalog.
+
+`)
 }
 
 // buildNativeSystemPrompt 构建工具循环模式的系统提示词：注入 Skills 与环境信息。
