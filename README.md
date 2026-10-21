@@ -189,7 +189,7 @@ curl -X POST http://localhost:17000/api/n9e/mcp-servers/test \
 | Docker Compose 本地评估 | [docker/compose-bridge](docker/compose-bridge/docker-compose.yaml) |
 | Linux 二进制（amd64/arm64） | 上游 [Release](https://github.com/ccfos/nightingale/releases) 与 [配置参考](etc/config.toml) |
 | Kubernetes | 上游 [n9e-helm](https://github.com/flashcatcloud/n9e-helm) |
-| 本分支源码构建 | `build-with-fe.sh`（见[快速开始](#快速开始)） |
+| 本分支源码构建 | `build-with-fe.sh`，完整教程见 [DEPLOY.md](DEPLOY.md) |
 
 生产建议：锁定版本、配置凭据与 TLS、备份元数据库、监控规则评估与通知失败。多实例共享元数据库与 Redis，时序数据用外部存储；嵌入式 TSDB 仅适合单机小规模部署。
 
