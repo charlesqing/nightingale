@@ -124,7 +124,9 @@ func buildILikeDisjunction(fields []string, likePattern string) string {
 	quoted := escapeSQLLiteral(likePattern)
 	parts := make([]string, 0, len(fields))
 	for _, f := range fields {
-		parts = append(parts, fmt.Sprintf(`"%s" ILIKE '%s' ESCAPE '\'`, f, quoted))
+		// 字段名来自流 schema/样本行（非用户直填），仍按标识符转义，防止含
+		// 双引号的非常规字段名截断后续 SQL。
+		parts = append(parts, fmt.Sprintf(`%s ILIKE '%s' ESCAPE '\'`, quoteSQLIdent(f), quoted))
 	}
 	return "(" + strings.Join(parts, " OR ") + ")"
 }
@@ -349,7 +351,7 @@ func (oo *OpenObserve) discoverFullTextFields(ctx context.Context, org, stream s
 	}
 
 	// 回退：样本行探测（旧版本无 schema 端点等场景的兼容路径）。
-	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d LIMIT 1`, stream, oo.timeField(), startMicros, endMicros)
+	sql := fmt.Sprintf(`SELECT * FROM %s WHERE %s BETWEEN %d AND %d LIMIT 1`, quoteSQLIdent(stream), oo.timeField(), startMicros, endMicros)
 	resp, err := oo.doSearch(ctx, org, sql, startMicros, endMicros, 0, 1)
 	if err != nil {
 		logger.Debugf("openobserve: discover full text fields for stream %s failed: %v", stream, err)

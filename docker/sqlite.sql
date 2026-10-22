@@ -1901,4 +1901,4 @@ CREATE TABLE mcp_server
     `updated_at`  bigint not null default 0,
     `updated_by`  varchar(64) not null default ''
 );
-CREATE INDEX idx_mcp_server_name ON mcp_server (name);
+CREATE UNIQUE INDEX idx_mcp_server_name ON mcp_server (name);

@@ -544,3 +544,16 @@ CREATE TABLE `mcp_server` (
     PRIMARY KEY (`id`),
     KEY `idx_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='mcp servers';
+
+/* v9 2026-10-22 mcp_server name 唯一约束：应用层查重存在并发竞态（两个同名
+   POST 可同时通过），由唯一索引在落库层兜底；models 侧同步把 Duplicate entry
+   错误翻成友好的「名称已存在」。
+   执行前先排查重名（应为空）：
+     SELECT name, COUNT(*) FROM mcp_server GROUP BY name HAVING COUNT(*) > 1;
+   有重名时先合并/删除重复行再建索引，否则下列语句会报 Duplicate entry。
+   若 idx_name 已是唯一索引（例如用新版 initsql 全新初始化过的库），DROP 会
+   报错「check that column/key exists」，跳过 DROP 只执行 ADD UNIQUE 即可
+   （ADD 重复建同名唯一索引同样报错时亦可忽略）。
+   PostgreSQL 请执行：ALTER TABLE mcp_server DROP INDEX IF EXISTS idx_name;
+   ALTER TABLE mcp_server ADD CONSTRAINT mcp_server_name_uk UNIQUE (name); */
+ALTER TABLE `mcp_server` DROP INDEX `idx_name`, ADD UNIQUE INDEX `idx_name` (`name`);

@@ -1081,4 +1081,4 @@ CREATE TABLE mcp_server (
     updated_at bigint NOT NULL DEFAULT 0,
     updated_by varchar(64) NOT NULL DEFAULT ''
 );
-CREATE INDEX mcp_server_name_idx ON mcp_server (name);
+CREATE UNIQUE INDEX mcp_server_name_idx ON mcp_server (name);

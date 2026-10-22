@@ -11,8 +11,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +60,8 @@ func (s *MCPSource) DiscoverTools(ctx context.Context) ([]aiagent.AgentTool, err
 }
 
 // CallTool 调用本源中名为 tool.Name 的工具，返回给 LLM 的纯文本结果。
+// 只提取 TextContent：图片/音频/资源链接等非文本 content 对当前 LLM 工具
+// 循环无消费路径，静默丢弃（需要时再按 MCP 类型扩展）。
 func (s *MCPSource) CallTool(ctx context.Context, tool *aiagent.AgentTool, args map[string]interface{}) (string, error) {
 	var sb strings.Builder
 	isError := false
@@ -97,7 +102,7 @@ func (s *MCPSource) withSession(ctx context.Context, fn func(session *mcp.Client
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	transport, err := s.buildTransport()
+	transport, err := s.buildTransport(ctx)
 	if err != nil {
 		return err
 	}
@@ -121,8 +126,8 @@ func (s *MCPSource) withSession(ctx context.Context, fn func(session *mcp.Client
 }
 
 // buildTransport 根据 server 配置构造 SDK 客户端传输，并把 headers 注入到每个出站请求。
-func (s *MCPSource) buildTransport() (mcp.Transport, error) {
-	if err := validateMCPURL(s.server.URL); err != nil {
+func (s *MCPSource) buildTransport(ctx context.Context) (mcp.Transport, error) {
+	if err := validateMCPURL(ctx, s.server.URL); err != nil {
 		return nil, err
 	}
 
@@ -176,10 +181,20 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return h.rt.RoundTrip(r)
 }
 
-// validateMCPURL 做最小化的 SSRF 防护：仅放行 http/https，并拒绝云元数据地址
-// 169.254.169.254（防止借 MCP 服务器地址窃取实例凭据）。本机/内网地址放行——内部
-// MCP 常跑在 localhost 或内网，属正常用法。
-func validateMCPURL(raw string) error {
+// validateMCPURL 做 SSRF 防护：仅放行 http/https，并解析目标 host——
+// 字面 IP（点分 IPv4 / IPv6 / IPv6-mapped，以及 netip 不认的十进制
+// 2852039166、十六进制 0xA9FEA9FE 整型 IPv4 形式）直接判定；DNS 名解析后
+// 对全部结果 IP 判定，任一命中即拒绝。
+//
+// 拒绝：link-local（含云元数据 169.254.169.254 及其整型变形）、未指定
+// （0.0.0.0 / ::）、多播。放行：回环与私网/内网段——内部 MCP 常跑在
+// localhost（本地 uvx/FastMCP 调试、e2e 测试）或内网，属正常用法；URL
+// 由管理员填写，攻击面本就有限，这里是纵深防御。若需进一步收紧到禁回环，
+// 把 isForbiddenIP 里的 ip.IsLoopback() 纳入即可。
+//
+// 已知限制：DNS 名存在解析竞态（校验时解析到公网 IP、连接时 rebind 到
+// 内网），彻底防护需在拨号层校验，成本超出本期范围。
+func validateMCPURL(ctx context.Context, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid url: %w", err)
@@ -187,10 +202,54 @@ func validateMCPURL(raw string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("url scheme must be http or https")
 	}
-	if u.Hostname() == "169.254.169.254" {
-		return fmt.Errorf("link-local metadata endpoint is not allowed")
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("url host is empty")
+	}
+
+	if ip, ok := parseHostIP(host); ok {
+		if isForbiddenIP(ip) {
+			return fmt.Errorf("target address %s is not allowed", ip)
+		}
+		return nil
+	}
+
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("resolve host %s failed: %w", host, err)
+	}
+	for _, ip := range ips {
+		if isForbiddenIP(ip) {
+			return fmt.Errorf("host %s resolves to disallowed address %s", host, ip)
+		}
 	}
 	return nil
+}
+
+// parseHostIP 解析字面量 IP：netip 覆盖点分 IPv4 / IPv6 / IPv6-mapped
+// （Unmap 归一化），另补十进制与十六进制整型 IPv4（netip 不认这两种形式，
+// 而 http://2852039166/ 在 Go 的 http.Client 里会被当作 169.254.169.254 拨号）。
+func parseHostIP(host string) (netip.Addr, bool) {
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Unmap(), true
+	}
+	lower := strings.ToLower(host)
+	base := 10
+	if strings.HasPrefix(lower, "0x") {
+		base = 16
+		lower = lower[2:]
+	}
+	if v, err := strconv.ParseUint(lower, base, 32); err == nil {
+		return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}), true
+	}
+	return netip.Addr{}, false
+}
+
+// isForbiddenIP 拒绝 link-local（云元数据）、未指定与多播地址；回环/私网放行
+// （理由见 validateMCPURL 注释）。
+func isForbiddenIP(ip netip.Addr) bool {
+	return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsMulticast()
 }
 
 // convertInputSchema 把 MCP 工具的 JSON Schema inputSchema 抽成 aiagent 的工具参数列表。

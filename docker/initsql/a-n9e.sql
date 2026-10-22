@@ -2285,5 +2285,5 @@ CREATE TABLE `mcp_server` (
     `updated_at` bigint NOT NULL DEFAULT 0 COMMENT 'update time',
     `updated_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'updater',
     PRIMARY KEY (`id`),
-    KEY `idx_name` (`name`)
+    UNIQUE KEY `idx_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='mcp servers';

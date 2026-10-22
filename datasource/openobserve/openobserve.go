@@ -334,7 +334,7 @@ func (oo *OpenObserve) QueryData(ctx context.Context, queryParam interface{}) ([
 	// 由告警引擎的阈值触发器决定是否产生异常点。
 	tf := oo.effectiveTimeField(param)
 	var b strings.Builder
-	fmt.Fprintf(&b, `SELECT count(*) AS count FROM "%s" WHERE %s BETWEEN %d AND %d`, oo.queryStream(param), tf, startMicros, endMicros)
+	fmt.Fprintf(&b, `SELECT count(*) AS count FROM %s WHERE %s BETWEEN %d AND %d`, quoteSQLIdent(oo.queryStream(param)), tf, startMicros, endMicros)
 	// andClause 会忽略空串与 Loki 风格的 "*"（查全部），避免生成非法的 "AND (*)"。
 	b.WriteString(oo.andClause(q))
 	resp, err := oo.doSearch(ctx, oo.queryOrg(param), b.String(), startMicros, endMicros, 0, 1)
@@ -435,8 +435,8 @@ func (oo *OpenObserve) QueryLabelNames(ctx context.Context, query string, start,
 		stream = oo.stream()
 	}
 	startU, endU := toMicros(start), toMicros(end)
-	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d%s LIMIT 1`,
-		stream, oo.timeField(), startU, endU, oo.andClause(query))
+	sql := fmt.Sprintf(`SELECT * FROM %s WHERE %s BETWEEN %d AND %d%s LIMIT 1`,
+		quoteSQLIdent(stream), oo.timeField(), startU, endU, oo.andClause(query))
 	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, 1)
 	if err != nil {
 		return nil, err
@@ -474,8 +474,8 @@ func (oo *OpenObserve) QueryLabelValues(ctx context.Context, query string, start
 	if lim <= 0 {
 		lim = 100
 	}
-	sql := fmt.Sprintf(`SELECT DISTINCT "%s" FROM "%s" WHERE %s BETWEEN %d AND %d%s LIMIT %d`,
-		label, stream, oo.timeField(), startU, endU, oo.andClause(query), lim)
+	sql := fmt.Sprintf(`SELECT DISTINCT %s FROM %s WHERE %s BETWEEN %d AND %d%s LIMIT %d`,
+		quoteSQLIdent(label), quoteSQLIdent(stream), oo.timeField(), startU, endU, oo.andClause(query), lim)
 	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, lim)
 	if err != nil {
 		return nil, err
@@ -508,8 +508,8 @@ func (oo *OpenObserve) QueryParsedFields(ctx context.Context, query string, star
 		stream = oo.stream()
 	}
 	startU, endU := toMicros(start), toMicros(end)
-	sql := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d%s LIMIT %d`,
-		stream, oo.timeField(), startU, endU, oo.andClause(query), limit)
+	sql := fmt.Sprintf(`SELECT * FROM %s WHERE %s BETWEEN %d AND %d%s LIMIT %d`,
+		quoteSQLIdent(stream), oo.timeField(), startU, endU, oo.andClause(query), limit)
 	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, limit)
 	if err != nil {
 		return nil, err
@@ -545,14 +545,14 @@ func (oo *OpenObserve) QueryHistogram(ctx context.Context, q HistogramQuery) ([]
 	}
 	startU, endU := toMicros(q.Start), toMicros(q.End)
 	unit := stepToUnit(q.Step)
-	sql := fmt.Sprintf(`SELECT count(*) AS value, date_trunc('%s', %s) AS ts FROM "%s" WHERE %s BETWEEN %d AND %d%s GROUP BY ts ORDER BY ts`,
-		unit, oo.timeField(), stream, oo.timeField(), startU, endU, oo.andClause(q.Query))
+	sql := fmt.Sprintf(`SELECT count(*) AS value, date_trunc('%s', %s) AS ts FROM %s WHERE %s BETWEEN %d AND %d%s GROUP BY ts ORDER BY ts`,
+		unit, oo.timeField(), quoteSQLIdent(stream), oo.timeField(), startU, endU, oo.andClause(q.Query))
 
 	resp, err := oo.doSearch(ctx, org, sql, startU, endU, 0, defaultHistogramSize)
 	if err != nil {
 		// Fallback: a single aggregate point so the UI still renders something.
-		fallback := fmt.Sprintf(`SELECT count(*) AS value FROM "%s" WHERE %s BETWEEN %d AND %d%s`,
-			stream, oo.timeField(), startU, endU, oo.andClause(q.Query))
+		fallback := fmt.Sprintf(`SELECT count(*) AS value FROM %s WHERE %s BETWEEN %d AND %d%s`,
+			quoteSQLIdent(stream), oo.timeField(), startU, endU, oo.andClause(q.Query))
 		fr, ferr := oo.doSearch(ctx, org, fallback, startU, endU, 0, 1)
 		if ferr != nil {
 			return nil, err
@@ -578,6 +578,13 @@ func (oo *OpenObserve) QueryHistogram(ctx context.Context, q HistogramQuery) ([]
 }
 
 // --- helpers ---
+
+// quoteSQLIdent 把流名/字段名包成双引号 SQL 标识符，内部的双引号按 SQL 标准
+// 双写转义（" → ""）。流名与 label 名可由前端选择器下发，含双引号时会截断/
+// 篡改后续 SQL（如 FROM "a" WHERE x="1" --），拼入前必须转义。
+func quoteSQLIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
 
 // httpGet 以数据源凭证对 OpenObserve 发起 GET 请求，用于拉取组织/数据流等元数据。
 func (oo *OpenObserve) httpGet(ctx context.Context, path string) ([]byte, error) {
@@ -697,7 +704,7 @@ func (oo *OpenObserve) buildLogSQL(query string, startMicros, endMicros int64, l
 		return q
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, `SELECT * FROM "%s" WHERE %s BETWEEN %d AND %d`, stream, oo.timeField(), startMicros, endMicros)
+	fmt.Fprintf(&b, `SELECT * FROM %s WHERE %s BETWEEN %d AND %d`, quoteSQLIdent(stream), oo.timeField(), startMicros, endMicros)
 	// andClause 会忽略空串与 Loki 风格的 "*"（查全部），避免生成非法的 "AND (*)"。
 	b.WriteString(oo.andClause(q))
 	// reverse 语义对齐 victorialogs 的 resolveLogTimeDesc：true=最新在前（DESC）。

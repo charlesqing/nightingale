@@ -8,10 +8,11 @@ import (
 	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
+	"github.com/toolkits/pkg/logger"
 )
 
 // mcpServerGets 列出全部 MCP 服务器。列表接口遮蔽 headers 取值，避免凭据出现在表格
-// 或网络响应里（detail 接口才返回明文）。
+// 或网络响应里（detail 接口同样遮蔽，理由见 models.MCPServer.Decorate）。
 func (rt *Router) mcpServerGets(c *gin.Context) {
 	search := ginx.QueryStr(c, "search", "")
 	lst, err := models.MCPServerGets(rt.Ctx, search)
@@ -34,8 +35,10 @@ func (rt *Router) mcpServerGet(c *gin.Context) {
 	if obj == nil {
 		ginx.Bomb(http.StatusNotFound, "mcp server not found")
 	}
-	// 详情返回明文（与 ai_skill.git_info.token 口径一致：仅授权用户可见）。
-	if err := obj.Decorate(false); err != nil {
+	// 详情同样遮蔽取值：MCP token 是可直接调用外部服务的活凭据，读接口一律
+	// 不回落明文。编辑表单里掩码值原样保存时，Update 的 mergeMaskedHeaders
+	// 会保留库中原值（见 models/mcp_server.go）。
+	if err := obj.Decorate(true); err != nil {
 		ginx.Dangerous(err)
 	}
 	ginx.NewRender(c).Data(obj, nil)
@@ -49,6 +52,7 @@ func (rt *Router) mcpServerAdd(c *gin.Context) {
 	me := c.MustGet("user").(*models.User)
 	err := obj.Create(rt.Ctx, me.Username)
 	ginx.Dangerous(err)
+	logger.Infof("[MCP] user=%s created mcp server id=%d name=%q url=%q transport=%s", me.Username, obj.Id, obj.Name, obj.URL, obj.Transport)
 	ginx.NewRender(c).Data(obj.Id, nil)
 }
 
@@ -66,6 +70,7 @@ func (rt *Router) mcpServerPut(c *gin.Context) {
 
 	me := c.MustGet("user").(*models.User)
 	ginx.Dangerous(obj.Update(rt.Ctx, me.Username, ref))
+	logger.Infof("[MCP] user=%s updated mcp server id=%d name=%q url=%q transport=%s enabled=%v", me.Username, id, ref.Name, ref.URL, ref.Transport, ref.Enabled)
 	ginx.NewRender(c).Message(nil)
 }
 
@@ -76,7 +81,9 @@ func (rt *Router) mcpServerDel(c *gin.Context) {
 	if obj == nil {
 		ginx.Bomb(http.StatusNotFound, "mcp server not found")
 	}
+	me := c.MustGet("user").(*models.User)
 	ginx.NewRender(c).Message(obj.Delete(rt.Ctx))
+	logger.Infof("[MCP] user=%s deleted mcp server id=%d name=%q", me.Username, id, obj.Name)
 }
 
 // mcpServerTest 不落库，直接按提交配置连一次 MCP 服务器并列举工具，供前端「测试连接」。

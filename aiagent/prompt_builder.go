@@ -141,6 +141,16 @@ func (a *Agent) appendSkillCatalog(sb *strings.Builder, rc *runCtx) {
 	sb.WriteString("\n")
 }
 
+// externalToolCatalogMax / externalToolDescMaxRunes 限制外部工具目录对系统
+// 提示词的无界增长：工具完整 schema 已由原生 tools 参数下发，提示词目录只是
+// 「点名」用途。实测 78 工具叠加 5.7K 政策已占 32K 窗口过半，再接第二台 MCP
+// 有再次触发截断的风险——条数封顶、单条描述按 rune 截断，超出部分一行汇总
+// （模型仍可通过 function-calling 接口调用，tools 数组不受此限制）。
+const (
+	externalToolCatalogMax     = 50
+	externalToolDescMaxRunes   = 120
+)
+
 // appendExternalToolCatalog 在系统提示词列出外部工具源（MCP 等）提供的工具，
 // 供模型把它们与内置工具同等对待。无外部工具时不输出。
 func (a *Agent) appendExternalToolCatalog(sb *strings.Builder, rc *runCtx) {
@@ -157,10 +167,21 @@ func (a *Agent) appendExternalToolCatalog(sb *strings.Builder, rc *runCtx) {
 		if desc == "" {
 			desc = "(no description)"
 		}
+		if r := []rune(desc); len(r) > externalToolDescMaxRunes {
+			desc = string(r[:externalToolDescMaxRunes]) + "…"
+		}
 		lines = append(lines, fmt.Sprintf("- %s: %s", t.Name, desc))
 	}
 	if len(lines) == 0 {
 		return
+	}
+	// 排序保证同配置下提示词逐字节稳定（利于 prompt cache 命中）；
+	// 封顶保证提示词不随外部工具数量无界膨胀（见常量注释）。
+	sort.Strings(lines)
+	omitted := 0
+	if len(lines) > externalToolCatalogMax {
+		omitted = len(lines) - externalToolCatalogMax
+		lines = lines[:externalToolCatalogMax]
 	}
 
 	sb.WriteString("## External MCP Tools (admin-connected)\n\n")
@@ -173,6 +194,9 @@ interface like any other tool:
 	for _, l := range lines {
 		sb.WriteString(l)
 		sb.WriteString("\n")
+	}
+	if omitted > 0 {
+		sb.WriteString(fmt.Sprintf("- ... and %d more external tools (their full schemas are provided via the function-calling interface)\n", omitted))
 	}
 	sb.WriteString("\n")
 	sb.WriteString(`Important: this catalog only lists AVAILABLE tools. Never claim a tool has
